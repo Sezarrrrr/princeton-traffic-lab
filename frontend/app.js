@@ -80,13 +80,14 @@ function roadResult(which, id) {
 }
 
 // Color by congestion ratio (car trips / capacity), as calculated by the backend.
-function roadColor(road) {
-  if (!road || road.closed) return "var(--closed)";
-  if (road.carTrips === 0) return "var(--empty)";
-  if (road.congestionRatio < 0.8) return "var(--free)";
-  if (road.congestionRatio <= 1.0) return "var(--busy)";
-  return "var(--jam)";
+function roadColorKey(road) {
+  if (!road || road.closed) return "closed";
+  if (road.carTrips === 0) return "empty";
+  if (road.congestionRatio < 0.8) return "free";
+  if (road.congestionRatio <= 1.0) return "busy";
+  return "jam";
 }
+const roadColor = road => `var(--${roadColorKey(road)})`;
 
 // Fit any set of x/y coordinates into the SVG, so the backend can use any scale.
 function makeProjector(intersections) {
@@ -465,6 +466,7 @@ const isDragging = box => box.contains(document.activeElement) && document.activ
 
 function render() {
   renderMap();
+  StreetMap.render({ state, selected, roadResult, colorKey: roadColorKey });
   renderSelected();
   renderBus();
   renderChanges();
@@ -477,6 +479,7 @@ let cars = [];
 let lastFrame = null;
 
 function rebuildCars() {
+  StreetMap.rebuildCars(result, $("animate-cars").checked);
   const layer = $("car-layer");
   layer.innerHTML = "";
   cars = [];
@@ -588,9 +591,55 @@ async function start() {
     if (!ids.has(road.to)) networkProblems.push(`${road.id}: unknown to "${road.to}"`);
   }
   drawMap();
+  setupViews();
   renderPreset();
   runSimulation(null);
   requestAnimationFrame(animate);
+}
+
+// ---- Street map vs. schematic view ----
+// The street map is the default. The schematic stays available as a demo fallback, and is used
+// automatically if Leaflet or the map tiles can't load (e.g. no internet at the venue).
+function showView(view) {
+  const street = view === "street" && StreetMap.isReady();
+  $("street-view").hidden = !street;
+  $("schematic-view").hidden = street;
+  $("view-street").setAttribute("aria-pressed", String(street));
+  $("view-schematic").setAttribute("aria-pressed", String(!street));
+  $("view-street").disabled = !StreetMap.isReady();
+  if (street) StreetMap.refreshSize();
+}
+
+function showMapNote(text) {
+  const note = $("map-note");
+  note.textContent = text;
+  note.hidden = !text;
+}
+
+function setupViews() {
+  const handlers = { onSelectRoad: id => select("road", id), onSelectNode: id => select("node", id) };
+  const onTilesFailed = reason => {
+    showMapNote(`${reason} Showing the schematic view. Try "Street map" again when you're back online.`);
+    showView("schematic");
+  };
+  let ok = false;
+  try {
+    ok = StreetMap.init(network, handlers, onTilesFailed);
+  } catch (err) {
+    console.error(err);
+  }
+  $("view-street").addEventListener("click", () => { showMapNote(""); showView("street"); });
+  $("view-schematic").addEventListener("click", () => showView("schematic"));
+
+  if (!ok) {
+    showMapNote("The street map couldn't load (no internet or Leaflet blocked). Showing the schematic view.");
+    showView("schematic");
+    return;
+  }
+  const missing = StreetMap.missing();
+  if (missing.length) showMapNote(`No street geometry yet for: ${missing.join(", ")}. Those roads appear only in the schematic view.`);
+  const wanted = new URLSearchParams(location.search).get("view");
+  showView(wanted === "schematic" ? "schematic" : "street");
 }
 
 start();
