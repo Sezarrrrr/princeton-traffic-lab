@@ -214,8 +214,11 @@ function drawMap() {
     nodeLayer.append(g);
   }
   // Many intersections: show names only on hover / selection so the diagram stays readable.
-  svg.classList.toggle("dense", network.intersections.length > 12);
+  denseMap = network.intersections.length > 12;
+  svg.classList.toggle("dense", denseMap);
+  svg.classList.toggle("very-dense", network.intersections.length > 80);
 }
+let denseMap = false;
 
 // ---- Updating the map from the latest results ----
 function renderMap() {
@@ -226,7 +229,7 @@ function renderMap() {
     const after = roadResult("scenario", id);
     const isClosed = state.closed.has(id);
     const lanes = state.lanes[id] || 0;
-    const width = 9 + lanes * 5;
+    const width = (denseMap ? 3 : 9) + lanes * (denseMap ? 2 : 5);
     g.classList.toggle("closed", isClosed);
     g.classList.toggle("nocar", !!(after && after.noCarAccess));
     g.classList.toggle("on-route", onRoute.has(id));
@@ -241,13 +244,14 @@ function renderMap() {
     const id = label.dataset.roadId;
     const before = roadResult("baseline", id), after = roadResult("scenario", id);
     const lanes = state.lanes[id] || 0;
-    let text = "";
+    let text = "", diff = 0;
     if (after && before && !after.closed && after.carTrips > 0) {
-      const diff = after.carTrips - before.carTrips;
+      diff = after.carTrips - before.carTrips;
       text = `${after.carTrips}` + (diff ? ` (${diff > 0 ? "+" : ""}${diff})` : "");
     }
     if (lanes && !state.closed.has(id)) text += `${text ? " · " : ""}+${lanes} lane${lanes > 1 ? "s" : ""}`;
-    label.textContent = text;
+    // Big network: label only the roads that changed.
+    label.textContent = !denseMap || diff || lanes ? text : "";
   }
 
   for (const g of document.querySelectorAll(".node")) {
@@ -267,12 +271,13 @@ function renderSelected() {
   const box = $("selected");
   if (isDragging(box)) return;
   box.innerHTML = "";
-  if (!selected) {
-    box.append(el("h2", {}, "Selected"), el("p", { class: "muted" }, "Click a road or intersection on the map."));
+  if (!selected || selected.type === "trip") {
+    box.append(el("h2", {}, "Selected"), el("p", { class: "muted" },
+      isLab() ? "Click a road to close it, add lanes, or change its speed and direction. Click an intersection to switch between signals, stop signs and roundabouts."
+              : "Click a road to close it or add lanes. Click an orange-ringed intersection to add a signal."));
     return;
   }
   if (selected.type === "road") renderSelectedRoad(box, selected.id);
-  else if (selected.type === "trip") renderSelectedTrip(box, selected.id);
   else if (isLab()) renderLabNode(box, selected.id);
   else renderSelectedNode(box, selected.id);
 }
@@ -447,15 +452,51 @@ function renderComparison() {
 
   // Trip conservation check (only if the backend sends the totals).
   const check = $("conservation");
+  const badge = $("check-badge");
   if ("totalCarTrips" in s && "completedCarTrips" in s) {
     const ok = r => r.completedCarTrips + r.unservedCarTrips + r.carTripsShiftedToBus === r.totalCarTrips;
-    check.textContent = ok(b) && ok(s)
+    const good = ok(b) && ok(s);
+    check.textContent = good
       ? `✓ Every trip is accounted for: ${s.completedCarTrips} completed + ${s.unservedCarTrips} unserved + ${s.carTripsShiftedToBus} by bus = ${s.totalCarTrips}.`
       : "⚠ Trip totals don't add up. Check the backend response.";
-    check.classList.toggle("worse", !(ok(b) && ok(s)));
+    check.classList.toggle("worse", !good);
+    badge.textContent = good ? "✓ all trips counted" : "⚠ totals don't add up";
+    badge.className = "check-badge " + (good ? "ok" : "bad");
+    badge.title = check.textContent;
   } else {
     check.textContent = "";
+    badge.textContent = "";
   }
+  renderKpis(b, s);
+}
+
+// Headline numbers as tiles: the modified value, with the original and the change underneath.
+function renderKpis(b, s) {
+  const box = $("kpis");
+  box.innerHTML = "";
+  const tile = (label, before, after, unit, upIsBad, digits = 1) => {
+    const t = el("div", { class: "kpi" });
+    const fmt = v => (v === null || v === undefined ? "–" : `${digits ? v.toFixed(digits) : v}`);
+    t.append(el("span", { class: "kpi-label" }, label));
+    const val = el("span", { class: "kpi-value" }, fmt(after));
+    if (unit && after !== null && after !== undefined) val.append(el("small", {}, ` ${unit}`));
+    t.append(val);
+    const diff = after !== null && before !== null && after !== undefined && before !== undefined ? after - before : null;
+    const sub = el("span", { class: "kpi-sub" });
+    if (diff === null) sub.textContent = after === null ? "no completed trips" : "";
+    else if (Math.abs(diff) < (digits ? 0.05 : 0.5)) sub.textContent = `same as original`;
+    else {
+      sub.append(`was ${fmt(before)} · `);
+      sub.append(el("strong", { class: (diff > 0) === upIsBad ? "worse" : "better" }, `${diff > 0 ? "+" : "−"}${fmt(Math.abs(diff))}`));
+    }
+    t.append(sub);
+    box.append(t);
+  };
+  tile("Avg. trip", b.avgCarTravelMinutes, s.avgCarTravelMinutes, "min", true);
+  if ("avgIntersectionWaitMinutes" in s) tile("Junction wait", b.avgIntersectionWaitMinutes, s.avgIntersectionWaitMinutes, "min", true);
+  if ("completedCarTrips" in s) tile("Completed", b.completedCarTrips, s.completedCarTrips, `of ${s.totalCarTrips}`, false, 0);
+  if (s.unservedCarTrips || b.unservedCarTrips || !("avgIntersectionWaitMinutes" in s)) tile("Unserved", b.unservedCarTrips, s.unservedCarTrips, "", true, 0);
+  if (s.carTripsShiftedToBus) tile("By bus", b.carTripsShiftedToBus, s.carTripsShiftedToBus, "", false, 0);
 }
 
 function renderShifts() {
@@ -465,35 +506,42 @@ function renderShifts() {
   const changed = network.roads
     .map(road => ({ road, before: roadResult("baseline", road.id), after: roadResult("scenario", road.id) }))
     .filter(x => x.before && x.after && x.before.carTrips !== x.after.carTrips)
-    .sort((x, y) => (y.after.carTrips - y.before.carTrips) - (x.after.carTrips - x.before.carTrips));
+    .sort((x, y) => Math.abs(y.after.carTrips - y.before.carTrips) - Math.abs(x.after.carTrips - x.before.carTrips));
 
   if (!changed.length) {
     list.append(el("li", { class: "muted" }, "No change from the original scenario."));
     return;
   }
-  for (const { road, before, after } of changed) {
-    const li = el("li");
+  const LIMIT = 15;
+  for (const { road, before, after } of changed.slice(0, LIMIT)) {
+    const li = el("li", { tabindex: "0", role: "button", title: "Select this road" });
     li.append(
       el("span", {}, road.name + (after.closed ? " (closed)" : "")),
       el("span", { class: "nums " + (after.carTrips > before.carTrips ? "worse" : "better") }, `${before.carTrips} → ${after.carTrips}`)
     );
+    li.addEventListener("click", () => select("road", road.id));
+    li.addEventListener("keydown", e => { if (e.key === "Enter") select("road", road.id); });
     list.append(li);
   }
+  if (changed.length > LIMIT) list.append(el("li", { class: "muted small" }, `…and ${changed.length - LIMIT} smaller changes.`));
 }
 
 function renderPreset() {
-  // Demo shortcut from demo/demo-script.md. Only shown if the network has that road.
+  // Demo shortcut from demo/demo-script.md. Only shown if the network has that road. On the expanded
+  // network wash_mid may be split into pieces (wash_mid_1, wash_mid_2): all of them are closed.
   const area = $("preset-area");
   area.innerHTML = "";
   const presetRoad = "wash_mid";
-  if (!roadById(presetRoad)) return;
-  const btn = el("button", { type: "button" }, "Demo: HackPrinceton Let-Out");
-  btn.title = `Start from the original scenario and close ${roadName(presetRoad)}`;
+  const ids = roadById(presetRoad) ? [presetRoad] : network.roads.filter(r => r.core === presetRoad).map(r => r.id);
+  if (!ids.length) return;
+  const btn = el("button", { type: "button", class: "preset-btn" }, "Demo: Let-Out");
+  btn.title = `HackPrinceton let-out: start from the original scenario and close Washington Road (Mid / JRR)`;
   btn.addEventListener("click", () => {
-    selected = { type: "road", id: presetRoad };
+    selected = { type: "road", id: ids[0] };
+    showTab("edit");
     change(() => {
       restore(emptyState());
-      state.closed.add(presetRoad);
+      for (const id of ids) state.closed.add(id);
     });
   });
   area.append(btn);
@@ -504,14 +552,69 @@ const isDragging = box => box.contains(document.activeElement) && document.activ
 
 function render() {
   renderMap();
-  StreetMap.render(mapContext());
+  const ctx = mapContext();
+  StreetMap.render(ctx);
+  Map3D.render(ctx);
   renderSelected();
   renderTrips();
   renderBus();
   renderChanges();
   renderComparison();
   renderShifts();
+  renderWaits();
   renderSettings();
+  renderTabCounts();
+}
+
+// ---- Tabs in the side panel ----
+let currentTab = "edit";
+function showTab(name) {
+  currentTab = name;
+  for (const btn of document.querySelectorAll(".tabs [data-tab]")) {
+    const on = btn.dataset.tab === name;
+    btn.setAttribute("aria-selected", String(on));
+    btn.tabIndex = on ? 0 : -1;
+    $(`tab-${btn.dataset.tab}`).hidden = !on;
+  }
+}
+function setupTabs() {
+  const buttons = [...document.querySelectorAll(".tabs [data-tab]")];
+  for (const btn of buttons) {
+    btn.addEventListener("click", () => showTab(btn.dataset.tab));
+    btn.addEventListener("keydown", e => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      const shown = buttons.filter(b => b.offsetParent !== null);
+      const i = shown.indexOf(btn) + (e.key === "ArrowRight" ? 1 : -1);
+      const next = shown[(i + shown.length) % shown.length];
+      showTab(next.dataset.tab); next.focus();
+    });
+  }
+  showTab("edit");
+}
+function renderTabCounts() {
+  const nChanges = $("changes").querySelectorAll("li button.link").length;
+  $("count-edit").textContent = nChanges ? String(nChanges) : "";
+  $("count-trips").textContent = isLab() && state.trips.length ? String(state.trips.length) : "";
+}
+
+// ---- Details tab: intersections with the longest waits (in-browser simulator) ----
+function renderWaits() {
+  const list = $("waits");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!result || !result.scenario.intersections) return;
+  const before = new Map(result.baseline.intersections.map(i => [i.id, i]));
+  const rows = result.scenario.intersections.filter(i => i.cars > 0).sort((a, b) => b.avgWaitSeconds - a.avgWaitSeconds).slice(0, 8);
+  for (const i of rows) {
+    const b = before.get(i.id);
+    const li = el("li", { tabindex: "0", role: "button", title: "Select this intersection" });
+    const worse = b && i.avgWaitSeconds > b.avgWaitSeconds, better = b && i.avgWaitSeconds < b.avgWaitSeconds;
+    li.append(el("span", {}, `${nodeName(i.id)} · ${CONTROL_NAMES[i.control.type].toLowerCase()}`),
+      el("span", { class: "nums " + (worse ? "worse" : better ? "better" : "") }, `${b ? b.avgWaitSeconds : "–"} → ${i.avgWaitSeconds} s`));
+    li.addEventListener("click", () => select("node", i.id));
+    li.addEventListener("keydown", e => { if (e.key === "Enter") select("node", i.id); });
+    list.append(li);
+  }
 }
 
 // ---- Animated cars (decoration: count follows car trips, speed follows travel time) ----
@@ -520,6 +623,7 @@ let lastFrame = null;
 
 function rebuildCars() {
   StreetMap.rebuildCars(result, $("animate-cars").checked);
+  Map3D.rebuildCars(result, $("animate-cars").checked);
   const layer = $("car-layer");
   layer.innerHTML = "";
   cars = [];
@@ -527,7 +631,8 @@ function rebuildCars() {
   for (const road of result.scenario.roads) {
     const geo = geometry[road.id];
     if (!geo || road.closed || !road.carTrips || !road.travelMinutes) continue;
-    const count = Math.max(1, Math.min(12, Math.round(road.carTrips / 20)));
+    if (denseMap && road.carTrips < 20) continue;
+    const count = Math.max(1, Math.min(denseMap ? 3 : 12, Math.round(road.carTrips / (denseMap ? 60 : 20))));
     const speed = 0.9 / road.travelMinutes; // fraction of the road per second
     for (let i = 0; i < count; i++) {
       const dot = svgEl("circle", { class: "car", r: 4 });
@@ -552,6 +657,7 @@ function animate(time) {
 // ---- User actions ----
 function select(type, id) {
   selected = { type, id };
+  showTab(type === "trip" ? "trips" : "edit");
   render();
 }
 
@@ -605,9 +711,9 @@ async function runSimulation(previousState) {
 let networkProblems = [];
 
 function statusText() {
-  const source = CONFIG.useLocal ? "the in-browser simulator (expanded network)" : `backend at ${CONFIG.apiBase}`;
+  const source = CONFIG.useLocal ? "In-browser simulator" : `Backend at ${CONFIG.apiBase}`;
   const problems = networkProblems.length ? ` Problems: ${networkProblems.join("; ")}` : "";
-  return `Using ${source}. ${network.intersections.length} intersections, ${network.roads.length} roads.${problems}`;
+  return `${source} · ${network.intersections.length} intersections · ${network.roads.length} roads${problems}`;
 }
 
 function setStatus(text, isError = false) {
@@ -637,23 +743,58 @@ async function start() {
     if (!ids.has(road.to)) networkProblems.push(`${road.id}: unknown to "${road.to}"`);
   }
   drawMap();
+  setupTabs();
   setupViews();
   renderPreset();
   runSimulation(null);
   requestAnimationFrame(animate);
 }
 
-// ---- Street map vs. schematic view ----
-// The street map is the default. The schematic stays available as a demo fallback, and is used
-// automatically if Leaflet or the map tiles can't load (e.g. no internet at the venue).
+// ---- Map views: street map (default), 3D, schematic ----
+// The schematic stays available as a demo fallback, and is used automatically if Leaflet or the map
+// tiles can't load (e.g. no internet at the venue). The 3D view loads its library on first use.
+let currentView = "street";
+let mapHandlers = null;
+
 function showView(view) {
-  const street = view === "street" && StreetMap.isReady();
-  $("street-view").hidden = !street;
-  $("schematic-view").hidden = street;
-  $("view-street").setAttribute("aria-pressed", String(street));
-  $("view-schematic").setAttribute("aria-pressed", String(!street));
+  if (view === "street" && !StreetMap.isReady()) view = "schematic";
+  if (view === "3d" && !Map3D.isReady()) view = "schematic";
+  // Keep the same place on screen when switching between the street map and 3D.
+  if (currentView === "street" && view === "3d") Map3D.setView(StreetMap.getView());
+  if (currentView === "3d" && view === "street") StreetMap.setView(Map3D.getView());
+  currentView = view;
+  $("street-view").hidden = view !== "street";
+  $("map3d-view").hidden = view !== "3d";
+  $("schematic-view").hidden = view !== "schematic";
+  for (const [id, v] of [["view-street", "street"], ["view-3d", "3d"], ["view-schematic", "schematic"]]) $(id).setAttribute("aria-pressed", String(view === v));
   $("view-street").disabled = !StreetMap.isReady();
-  if (street) StreetMap.refreshSize();
+  if (view === "street") StreetMap.refreshSize();
+  if (view === "3d") Map3D.refreshSize();
+}
+
+async function open3D() {
+  if (Map3D.isReady()) { showMapNote(""); showView("3d"); return; }
+  const btn = $("view-3d");
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  // The 3D container must be visible while MapLibre measures it.
+  const startView = StreetMap.getView();
+  $("street-view").hidden = true; $("schematic-view").hidden = true; $("map3d-view").hidden = false;
+  try {
+    await Map3D.init(network, mapHandlers, startView);
+    Map3D.render(mapContext());
+    Map3D.rebuildCars(result, $("animate-cars").checked);
+    showMapNote("");
+    currentView = "street"; // so showView keeps the same place on screen
+    showView("3d");
+  } catch (err) {
+    console.error(err);
+    showMapNote(`${err.message} Staying on the 2D map.`);
+    showView(StreetMap.isReady() ? "street" : "schematic");
+  } finally {
+    btn.textContent = "3D";
+    btn.disabled = Map3D.hasFailed();
+  }
 }
 
 function showMapNote(text) {
@@ -663,13 +804,14 @@ function showMapNote(text) {
 }
 
 function setupViews() {
-  const handlers = {
+  const handlers = mapHandlers = {
     onSelectRoad: (id, latLng) => (picking ? handlePick([latLng.lat, latLng.lng]) : select("road", id)),
     onSelectNode: id => (picking ? handlePick(null, id) : select("node", id)),
     onMapClick: latLng => { if (picking) handlePick([latLng.lat, latLng.lng]); }
   };
   const onTilesFailed = reason => {
-    showMapNote(`${reason} Showing the schematic view. Try "Street map" again when you're back online.`);
+    if (currentView !== "street") return;
+    showMapNote(`${reason} Showing the schematic view. Try "Map" again when you're back online.`);
     showView("schematic");
   };
   let ok = false;
@@ -679,8 +821,10 @@ function setupViews() {
     console.error(err);
   }
   $("view-street").addEventListener("click", () => { showMapNote(""); showView("street"); });
+  $("view-3d").addEventListener("click", open3D);
   $("view-schematic").addEventListener("click", () => showView("schematic"));
 
+  const wanted = new URLSearchParams(location.search).get("view");
   if (!ok) {
     showMapNote("The street map couldn't load (no internet or Leaflet blocked). Showing the schematic view.");
     showView("schematic");
@@ -688,8 +832,8 @@ function setupViews() {
   }
   const missing = StreetMap.missing();
   if (missing.length) showMapNote(`No street geometry yet for: ${missing.join(", ")}. Those roads appear only in the schematic view.`);
-  const wanted = new URLSearchParams(location.search).get("view");
   showView(wanted === "schematic" ? "schematic" : "street");
+  if (wanted === "3d") open3D();
 }
 
 start();
