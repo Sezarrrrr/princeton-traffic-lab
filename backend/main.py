@@ -12,7 +12,7 @@ from .simulator import (
     SimulationRequest, recommend, run_simulation,
 )
 
-app = FastAPI(title="Princeton Traffic Lab")
+app = FastAPI(title="Traffix Lab")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,

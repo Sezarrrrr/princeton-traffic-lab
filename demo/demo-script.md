@@ -1,9 +1,9 @@
-# Princeton Traffic Lab — Judge Demo Script (`demo/demo-script.md`)
+# Traffix Lab — Judge Demo Script (`demo/demo-script.md`)
 
 **Target Runtime:** 1 minute 45 seconds – 2 minutes 00 seconds (Strict 2:00 HackPrinceton judging cap)  
 **Presenter:** Map Research, Testing & Demo Lead (with Sizar & Frontend Teammate standing by)  
 **Pre-Demo Setup Checklist:**
-- Browser open to Princeton Traffic Lab at default **Baseline** view (no closures, 0 extra lanes, 0 signals, 0% bus shift).
+- Browser open to Traffix Lab at default **Baseline** view (no closures, 0 extra lanes, 0 signals, 0% bus shift).
 - Map centered on Nassau Street, Washington Road, Julis Romo Rabinowitz Building (JRR), and Princeton Station.
 
 ---
@@ -11,7 +11,7 @@
 ## 0:00 – 0:25 | Hook & Map Orientation ("We're right here")
 > **[Point to the Julis Romo Rabinowitz Building / Washington Road on the screen]**
 >
-> "Hi! We're **Princeton Traffic Lab**, and **we're right here**—outside the Julis Romo Rabinowitz Building on Washington Road, between Nassau Street and Princeton Station.
+> "Hi! We're **Traffix Lab**, and **we're right here**—outside the Julis Romo Rabinowitz Building on Washington Road, between Nassau Street and Princeton Station.
 >
 > All the roads and intersections on this map are real Princeton corridors, while our baseline volumes, capacities, and travel times are clearly labeled simulation assumptions. Right now, you're seeing normal baseline traffic flow across 9 connected road segments."
 

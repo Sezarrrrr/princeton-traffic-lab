@@ -1,4 +1,4 @@
-# Princeton Traffic Lab: Frontend
+# Traffix Lab: Frontend
 
 Plain HTML, CSS, and vanilla JavaScript, plus **Leaflet** for the street map. No build step.
 

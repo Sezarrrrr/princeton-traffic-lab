@@ -1,4 +1,4 @@
-# Princeton Traffic Lab — Test Plan (`testing/test-plan.md`)
+# Traffix Lab — Test Plan (`testing/test-plan.md`)
 
 **Branch:** `testing-demo`  
 **Network Reference:** `testing/road-network.md` (Draft v2: **10 roads**, **9 unique intersections**)  

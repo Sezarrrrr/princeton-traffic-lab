@@ -1,4 +1,4 @@
-# Princeton Traffic Lab — Road Network Specification
+# Traffix Lab — Road Network Specification
 
 **Status:** Draft v2 (Map-Verified & Synchronized for Backend & Frontend)  
 **Primary Map Sources:** [Princeton University Campus Map (`map.princeton.edu`)](https://map.princeton.edu/) & [Princeton Facilities Campus Maps (`facilities.princeton.edu/maps`)](https://facilities.princeton.edu/maps)  

@@ -1,4 +1,4 @@
-// Princeton Traffic Lab frontend.
+// Traffix Lab frontend.
 // Draws whatever network GET /api/network returns (no street names or IDs are hard-coded,
 // except the optional demo preset), lets the user combine changes (road closures, extra lanes,
 // signals, bus shift), and shows the POST /api/simulate results.
