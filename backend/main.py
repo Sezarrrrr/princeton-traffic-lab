@@ -1,10 +1,16 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .princeton_network import PRINCETON_NETWORK
 
 app = FastAPI(title="Princeton Traffic Lab")
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5501", "http://localhost:5501"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 ROUTE_A = ("wash_north", "wash_mid", "wash_south", "faculty_rd", "alex_station")
 ROUTE_B = ("nassau_west", "nassau_mercer", "alex_north")
 BASELINE_TRIPS = {ROUTE_A: 120, ROUTE_B: 80}
