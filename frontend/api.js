@@ -2,7 +2,7 @@
 // To use Sizar's FastAPI server, set useMock to false (or open the page with ?api=real).
 const CONFIG = {
   useMock: !new URLSearchParams(location.search).has("api"),
-  apiBase: "http://localhost:8000"
+  apiBase: "http://127.0.0.1:8000"
 };
 
 // fetch() only throws when the server can't be reached at all (not running, wrong port,
@@ -24,7 +24,11 @@ async function fetchNetwork() {
 
 async function fetchSimulation(scenario) {
   if (CONFIG.useMock) return mockSimulate(scenario);
-  const res = await request(`${CONFIG.apiBase}/api/simulate`, {
+  return postScenario("simulate", scenario);
+}
+
+async function postScenario(endpoint, scenario) {
+  const res = await request(`${CONFIG.apiBase}/api/${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(scenario)
@@ -32,7 +36,8 @@ async function fetchSimulation(scenario) {
   if (!res.ok) {
     let detail = "";
     try { detail = (await res.json()).detail; } catch (e) { /* no JSON body */ }
-    throw new Error(`POST /api/simulate failed (${res.status}) ${detail || ""}`.trim());
+    const message = Array.isArray(detail) ? detail.map(error => error.msg).join(", ") : detail;
+    throw new Error(`POST /api/${endpoint} failed (${res.status}) ${message || ""}`.trim());
   }
   return res.json();
 }

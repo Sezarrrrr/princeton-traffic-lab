@@ -1,33 +1,24 @@
-from collections import deque
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
+from .lane_stretches import LaneEndpoints, lane_nodes, lane_options, validate_stretch
+from .custom_bus import CustomBusRoute, plan_custom, validate_custom
 
-from .princeton_network import PRINCETON_NETWORK
+from .princeton_network import BUS_ROUTES, DEFAULT_DESTINATION, DEFAULT_ORIGIN, ENDPOINTS, PRINCETON_NETWORK, PICK_ROADS, STREET_PICKS, STRETCHES, endpoint_node
+from .simulator import (
+    ROADS, SIGNAL_APPROACHES, SIGNAL_CYCLE_SECONDS,
+    SimulationRequest, recommend, run_simulation,
+)
 
 app = FastAPI(title="Princeton Traffic Lab")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5501", "http://localhost:5501"],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
-ROUTE_A = ("wash_north", "wash_mid", "wash_south", "faculty_rd", "alex_station")
-ROUTE_B = ("nassau_west", "nassau_mercer", "alex_north")
-BASELINE_TRIPS = {ROUTE_A: 120, ROUTE_B: 80}
-TOTAL_TRIPS = sum(BASELINE_TRIPS.values())
-ORIGIN = "int_nassau_wash"
-DEFAULT_DESTINATION = "int_alex_univ"
-DESTINATION_IDS = (DEFAULT_DESTINATION, "int_prospect_olden")
-
-
-class SimulationRequest(BaseModel):
-    closedRoadIds: list[str] = Field(default_factory=list)
-    extraLanesByRoadId: dict[str, int] = Field(default_factory=dict)
-    signals: list[dict] = Field(default_factory=list)
-    busShiftPercent: int = 0
-    destinationId: str = DEFAULT_DESTINATION
 
 
 @app.get("/api/health")
@@ -37,100 +28,91 @@ def health_check():
 
 @app.get("/api/network")
 def get_network():
-    return {**PRINCETON_NETWORK, "destinationIds": DESTINATION_IDS}
-
-
-def find_route(destination_id, closed_roads):
-    neighbors = {}
-    for road in PRINCETON_NETWORK["roads"]:
-        if road["id"] in closed_roads or not road.get("carAccess", True):
-            continue
-        start, end = road["from"], road["to"]
-        neighbors.setdefault(start, []).append((end, road["id"]))
-        if road.get("twoWay", False):
-            neighbors.setdefault(end, []).append((start, road["id"]))
-
-    pending = deque([(ORIGIN, ())])
-    visited = {ORIGIN}
-    while pending:
-        intersection_id, route = pending.popleft()
-        if intersection_id == destination_id:
-            return route
-        for next_id, road_id in neighbors.get(intersection_id, ()):
-            if next_id not in visited:
-                visited.add(next_id)
-                pending.append((next_id, route + (road_id,)))
-    return None
-
-
-def run_simulation(closed_roads, extra_lanes, destination_id=DEFAULT_DESTINATION):
-    if destination_id == DEFAULT_DESTINATION:
-        open_routes = [
-            route for route in BASELINE_TRIPS if closed_roads.isdisjoint(route)
-        ]
-    else:
-        route = find_route(destination_id, closed_roads)
-        open_routes = [route] if route is not None else []
-    trips_by_road = {road["id"]: 0 for road in PRINCETON_NETWORK["roads"]}
-    completed_trips = 0
-
-    for route in open_routes:
-        trips = TOTAL_TRIPS if len(open_routes) == 1 else BASELINE_TRIPS[route]
-        completed_trips += trips
-        for road_id in route:
-            trips_by_road[road_id] += trips
-
-    roads = []
-    total_travel_minutes = 0.0
-    for road in PRINCETON_NETWORK["roads"]:
-        road_id = road["id"]
-        closed = road_id in closed_roads
-        trips = trips_by_road[road_id]
-        capacity = 100 * (1 + extra_lanes.get(road_id, 0))
-        ratio = None if closed else trips / capacity
-        minutes = None if ratio is None else 2 * (1 + 0.15 * ratio**4)
-
-        if minutes is not None:
-            total_travel_minutes += trips * minutes
-
-        roads.append({
-            "id": road_id,
-            "carTrips": trips,
-            "travelMinutes": None if minutes is None else round(minutes, 2),
-            "congestionRatio": ratio,
-            "closed": closed,
-        })
-
     return {
-        "totalCarTrips": TOTAL_TRIPS,
-        "completedCarTrips": completed_trips,
-        "avgCarTravelMinutes": (
-            round(total_travel_minutes / completed_trips, 2)
-            if completed_trips else None
-        ),
-        "unservedCarTrips": TOTAL_TRIPS - completed_trips,
-        "carTripsShiftedToBus": 0,
-        "roads": roads,
+        **PRINCETON_NETWORK,
+        "defaults": {"originId": DEFAULT_ORIGIN, "destinationId": DEFAULT_DESTINATION},
+        "signalIntersections": list(SIGNAL_APPROACHES),
+        "signalApproaches": SIGNAL_APPROACHES, "signalCycleSeconds": SIGNAL_CYCLE_SECONDS,
+        "streetStretches": STRETCHES,
+        "streetPicks": STREET_PICKS,
+        "pickRoads": PICK_ROADS,
+        "busRoutes": [],
+        "busStops": [],
     }
+
+
+def validate(request):
+    if (set(request.closedRoadIds) | set(request.extraLanesByRoadId)) - ROADS.keys():
+        raise HTTPException(status_code=422, detail="Unknown road ID")
+    if request.originId not in ENDPOINTS or request.destinationId not in ENDPOINTS:
+        raise HTTPException(status_code=422, detail="Unknown trip endpoint")
+    if endpoint_node(request.originId) == endpoint_node(request.destinationId):
+        raise HTTPException(status_code=422, detail="Choose different points for From and To")
+    try:
+        for stretch in request.laneStretches:
+            validate_stretch(stretch)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    custom_ids = set()
+    for route in request.customBusRoutes:
+        try:
+            validate_custom(route)
+            if route.id in custom_ids:
+                raise ValueError("Duplicate custom bus route ID.")
+            custom_ids.add(route.id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+    preset_ids = {route["id"] for route in BUS_ROUTES}
+    request.enabledBusRouteIds = [id for id in request.enabledBusRouteIds if id not in preset_ids]
+    if set(request.enabledBusRouteIds) - custom_ids:
+        raise HTTPException(status_code=422, detail="Unknown bus route ID")
+    ids = [signal.intersectionId for signal in request.signals]
+    if set(ids) - SIGNAL_APPROACHES.keys():
+        raise HTTPException(status_code=422, detail="Unknown signal intersection")
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=422, detail="Use one signal per intersection")
 
 
 @app.post("/api/simulate")
 def simulate(request: SimulationRequest):
-    closed_roads = set(request.closedRoadIds)
-    extra_lanes = request.extraLanesByRoadId
-    known_roads = {road["id"] for road in PRINCETON_NETWORK["roads"]}
-
-    if (closed_roads | set(extra_lanes)) - known_roads:
-        raise HTTPException(status_code=422, detail="Unknown road ID")
-    if any(lanes < 0 for lanes in extra_lanes.values()):
-        raise HTTPException(status_code=422, detail="Extra lanes must be zero or more")
-    if request.signals or request.busShiftPercent:
-        raise HTTPException(status_code=422, detail="Signals and bus service are not supported yet")
-
-    if request.destinationId not in DESTINATION_IDS:
-        raise HTTPException(status_code=422, detail="Unknown destination ID")
-
+    validate(request)
     return {
-        "baseline": run_simulation(set(), {}, request.destinationId),
-        "scenario": run_simulation(closed_roads, extra_lanes, request.destinationId),
+        "baseline": run_simulation(SimulationRequest(originId=request.originId, destinationId=request.destinationId)),
+        "scenario": run_simulation(request),
     }
+
+
+@app.post("/api/recommend")
+def recommend_fix(request: SimulationRequest):
+    validate(request)
+    return recommend(request)
+
+
+class BusPreview(BaseModel):
+    route: CustomBusRoute
+    closedRoadIds: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/bus-preview")
+def preview_bus(request: BusPreview):
+    if set(request.closedRoadIds) - ROADS.keys():
+        raise HTTPException(status_code=422, detail="Unknown road ID")
+    try:
+        return plan_custom(request.route, set(request.closedRoadIds))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+class LanePreview(LaneEndpoints):
+    closedRoadIds: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/lane-preview")
+def preview_lane(request: LanePreview):
+    if set(request.closedRoadIds) - ROADS.keys():
+        raise HTTPException(status_code=422, detail="Unknown closed road ID")
+    try:
+        start, end = lane_nodes(request)
+        return {"options": lane_options(start, end, frozenset(request.closedRoadIds))}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error

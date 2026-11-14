@@ -8,24 +8,28 @@ const StreetMap = (() => {
     ? "http://127.0.0.1:9/{z}/{x}/{y}.png"
     : "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-  const COLORS = { free: "#2e9e5b", busy: "#e0a100", jam: "#d0342c", closed: "#9aa1ad", empty: "#a9b0bb", bus: "#2f6fdb", accent: "#e77500" };
-  const BASE_WIDTH = 7, LANE_WIDTH = 4;
-  // Visual only: which way cars drive along each road. Trips in the road doc run from
-  // Nassau & Washington to Princeton Station, so Route A uses alex_station from Faculty Rd north.
-  const REVERSE_FLOW = new Set(["alex_station"]);
+  const COLORS = { faster: "#19834d", slower: "#c53b32", unchanged: "#526778", closed: "#9aa1ad", empty: "#a9b0bb", accent: "#e77500" };
   const CAR_COLORS = ["#ffffff", "#f2f2f2", "#2b2f38", "#3a6fd8", "#c8372d", "#8a929e", "#e9c46a"];
 
   let map = null;
+  let initialBounds = null;
   let ready = false;
-  const roadLayers = {};      // road id -> { casing, line, halo, hit, xMarker, badge, path }
-  const nodeLayers = {};      // intersection id -> { ring, signal }
-  let busLayer = null;
-  let carLayer = null;
+  const endpointPositions = new Map();
+  const endpointPins = new Map();
+  let importedRoads = [], importedHighlights, importedStyleKey;
+  const importedBounds = new Map();
+  let coverageCircle, customLayer, previewLayer, lanePreview;
+  let lookupRoads, lookupPoints, pointHandlers;
+  let intersections = [], pickPoints = [], pickLayer, pickTooltip;
+  const customPaths = new Map();
+
+  const importedSignals = new Map();
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let vehicleLayer = null, zoomFrame = null;
   let cars = [];
   let lastFrame = null;
   let missingGeometry = [];
-  let carScale = 1;           // cars shrink when zoomed out so they don't hide the road colors
-  const updateCarScale = () => { carScale = Math.min(1.15, Math.max(0.55, Math.pow(2, map.getZoom() - 17))); };
+
 
   // ---- Geometry helpers (meters on a small local area) ----
   const R = 6371000;
@@ -48,8 +52,13 @@ const StreetMap = (() => {
   }
   function pointAt(path, s) { // position and heading at distance s along the path
     const { points, cum } = path;
-    let i = 1;
-    while (i < cum.length - 1 && cum[i] < s) i++;
+    let lo = 1, hi = cum.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (cum[mid] <= s) lo = mid + 1;
+      else hi = mid;
+    }
+    const i = lo;
     const seg = cum[i] - cum[i - 1] || 1;
     const t = Math.min(Math.max((s - cum[i - 1]) / seg, 0), 1);
     const a = points[i - 1], b = points[i];
@@ -67,6 +76,15 @@ const StreetMap = (() => {
     </svg></div>`;
     return L.divIcon({ className: "car-icon", html, iconSize: [14, 26], iconAnchor: [7, 13] });
   }
+  const busIcon = color => L.divIcon({
+    className: "car-icon bus-icon",
+    html: `<div class="car-rot"><svg width="14" height="26" viewBox="0 0 14 26" aria-hidden="true">
+      <rect x="1" y="1" width="12" height="24" rx="3" fill="${color}" stroke="#fff" stroke-width="1.5"/>
+      <rect x="3" y="4" width="8" height="5" rx="1" fill="#fff"/>
+      <path d="M3 12h8M3 16h8M3 20h8" stroke="#fff" stroke-width="1.5"/>
+    </svg></div>`,
+    iconSize: [14, 26], iconAnchor: [7, 13]
+  });
   const venueIcon = () => L.divIcon({
     className: "venue-icon",
     html: '<div class="venue-pin"><span class="venue-dot"></span></div>',
@@ -77,13 +95,23 @@ const StreetMap = (() => {
     html: '<svg width="14" height="30" viewBox="0 0 14 30"><rect width="14" height="30" rx="3" fill="#2b2f38"/><circle cx="7" cy="7" r="3.5" fill="#ff5a4f"/><circle cx="7" cy="15" r="3.5" fill="#6b5a1e"/><circle cx="7" cy="23" r="3.5" fill="#3ddc84"/></svg>',
     iconSize: [14, 30], iconAnchor: [-6, 34]
   });
-  const textIcon = (cls, text) => L.divIcon({ className: cls, html: `<span>${text}</span>`, iconSize: null });
-
   // ---- Setup ----
-  function init(network, handlers, onTilesFailed) {
-    if (typeof L === "undefined" || typeof ROAD_GEOMETRY === "undefined") return false;
+  function init(network, junctions, handlers, onTilesFailed) {
+    if (typeof L === "undefined") return false;
+    const pointById = new Map([...network.intersections, ...(network.streetPicks || [])].map(node => [node.id, node]));
+    const roads = network.roads.map(road => ({ ...road, geometry: road.geometry || ROAD_GEOMETRY.roads[road.id] }));
+    lookupRoads = new Map([...roads, ...(network.pickRoads || [])].map(road => [road.id, road]));
+    lookupPoints = pointById;
+    pointHandlers = handlers;
+    importedRoads = roads.filter(road => road.geometry?.length >= 2);
+    intersections = network.intersections;
+    pickPoints = junctions.filter(point => point.latLng || ROAD_GEOMETRY.intersections[point.id])
+      .map(point => ({ ...point, latLng: point.latLng || ROAD_GEOMETRY.intersections[point.id] }));
+    const position = point => point.latLng || ROAD_GEOMETRY.intersections[point.id];
+
 
     map = L.map("leaflet-map", { zoomSnap: 0.25, zoomDelta: 0.5, scrollWheelZoom: true, preferCanvas: false });
+    for (const road of importedRoads) importedBounds.set(road.id, L.latLngBounds(road.geometry));
     let loaded = 0, failed = 0, reported = false;
     const tiles = L.tileLayer(TILE_URL, { maxZoom: 19, attribution: ATTRIBUTION });
     tiles.on("tileload", () => { loaded++; });
@@ -97,155 +125,460 @@ const StreetMap = (() => {
     map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
 
     const allPoints = [];
-    busLayer = L.layerGroup();
     const roadPane = map.createPane("roads"); roadPane.style.zIndex = 410;
     const carPane = map.createPane("cars"); carPane.style.zIndex = 620; carPane.style.pointerEvents = "none";
     const labelPane = map.createPane("labels"); labelPane.style.zIndex = 630; labelPane.style.pointerEvents = "none";
 
-    missingGeometry = [];
-    for (const road of network.roads) {
-      const pts = ROAD_GEOMETRY.roads[road.id];
-      if (!pts || pts.length < 2) { missingGeometry.push(road.id); continue; }
-      allPoints.push(...pts);
-      const path = measure(REVERSE_FLOW.has(road.id) ? [...pts].reverse() : pts);
-      const mid = pointAt(measure(pts), measure(pts).length / 2).latLng;
-      const opts = { pane: "roads", lineCap: "round", lineJoin: "round" };
-      const layers = {
-        path,
-        halo: L.polyline(pts, { ...opts, color: COLORS.accent, weight: 20, opacity: 0, interactive: false }),
-        casing: L.polyline(pts, { ...opts, color: "#ffffff", weight: BASE_WIDTH + 4, opacity: 0.9, interactive: false }),
-        line: L.polyline(pts, { ...opts, color: COLORS.empty, weight: BASE_WIDTH, opacity: 0.95, interactive: false }),
-        hit: L.polyline(pts, { ...opts, color: "#000", weight: 26, opacity: 0.001, className: `road-hit road-hit-${road.id}` }),
-        xMarker: L.marker(mid, { pane: "labels", icon: textIcon("map-x", "✕"), interactive: false }),
-        badge: L.marker(mid, { pane: "labels", icon: textIcon("map-badge", ""), interactive: false })
-      };
-      layers.hit.bindTooltip(road.name, { sticky: true, direction: "top", className: "road-tip" });
-      layers.hit.on("click", () => handlers.onSelectRoad(road.id));
-      for (const key of ["halo", "casing", "line", "hit", "badge"]) layers[key].addTo(map);
-      roadLayers[road.id] = layers;
+    customLayer = L.layerGroup().addTo(map);
+    previewLayer = L.layerGroup().addTo(map);
+    lanePreview = L.layerGroup().addTo(map);
+    if (network.coverage) {
+      const { center, radiusMeters } = network.coverage;
+      coverageCircle = L.circle(center, { radius: radiusMeters, color: "#3c6596", weight: 2,
+        dashArray: "6 7", fillOpacity: 0.025, interactive: false }).addTo(map);
     }
-
-    if (network.busRoute) {
-      for (const id of network.busRoute.roadIds) {
-        const pts = ROAD_GEOMETRY.roads[id];
-        if (pts) busLayer.addLayer(L.polyline(pts, { pane: "roads", color: COLORS.bus, weight: 3, dashArray: "2 9", lineCap: "round", interactive: false }));
-      }
-    }
-
-    const signals = new Set(network.signalIntersections || []);
-    for (const inter of network.intersections) {
-      const ll = ROAD_GEOMETRY.intersections[inter.id];
+    const pane = map.createPane("imported-roads");
+    pane.style.zIndex = 380;
+    pane.style.pointerEvents = "none";
+    addImportedTiles("imported-roads", network.streetStretches || importedRoads.map(road => road.geometry));
+    const pickPane = map.createPane("road-picks");
+    pickPane.style.zIndex = 450;
+    pickPane.style.pointerEvents = "none";
+    pickLayer = addImportedTiles("road-picks", pickPoints.map(point => [point.latLng]), true);
+    pickTooltip = L.tooltip({ direction: "top", offset: [0, -4] });
+    const hidePickLabel = () => pickTooltip.remove();
+    map.on("mousemove", event => {
+      if (!map.hasLayer(pickLayer)) return;
+      const pick = nearestJunction(event.containerPoint, 9);
+      if (!pick) { hidePickLabel(); return; }
+      const label = document.createElement("span");
+      label.textContent = pick.name;
+      pickTooltip.setLatLng(pick.latLng).setContent(label).addTo(map);
+    });
+    map.on("mouseout movestart", hidePickLabel);
+    importedHighlights = L.layerGroup().addTo(map);
+    map.on("click", event => pickImported(event, handlers));
+    missingGeometry = roads.filter(road => !road.geometry?.length).map(road => road.id);
+    for (const node of pointById.values()) {
+      const ll = position(node);
       if (!ll) continue;
-      const can = signals.has(inter.id);
-      const ring = L.circleMarker(ll, {
-        pane: "roads", radius: can ? 9 : 6, weight: can ? 3 : 2,
-        color: can ? COLORS.accent : "#1d2330", fillColor: "#ffffff", fillOpacity: 1
+      endpointPositions.set(node.id, ll);
+      if (!node.imported && !node.roadId) allPoints.push(ll);
+    }
+
+    for (const place of (network.locations || [])) {
+      const coordinates = place.latLng || position(pointById.get(place.nodeId));
+      endpointPositions.set(place.id, coordinates);
+      const icon = place.venue ? venueIcon() : L.divIcon({
+        className: "landmark-icon", html: "<span></span>", iconSize: [14, 14], iconAnchor: [7, 7]
       });
-      ring.bindTooltip(inter.name + (can ? " (signal possible)" : ""), { direction: "top", className: "road-tip" });
-      ring.on("click", () => handlers.onSelectNode(inter.id));
-      ring.addTo(map);
-      nodeLayers[inter.id] = { ring, can, signal: L.marker(ll, { pane: "labels", icon: signalIcon(), interactive: false }) };
+      L.marker(coordinates, { icon, title: place.name, alt: place.name })
+        .bindTooltip(place.venue ? `You are here · ${place.name}` : place.name,
+          { permanent: !!place.venue, direction: "right", offset: [12, 0], className: place.venue ? "venue-label" : "" })
+        .on("click", () => handlers.onSelectEndpoint(place.id)).addTo(map);
+      allPoints.push(coordinates);
     }
 
-    // "You are here": Julis Romo Rabinowitz Building (HackPrinceton venue).
-    const venue = ROAD_GEOMETRY.landmarks && ROAD_GEOMETRY.landmarks.jrr;
-    if (venue) {
-      L.marker(venue.latLng, { icon: venueIcon(), keyboard: false, zIndexOffset: 1000 })
-        .bindTooltip(`<strong>You are here</strong><br>${venue.name}`, { permanent: true, direction: "right", offset: [12, 0], className: "venue-label" })
-        .addTo(map);
-      allPoints.push(venue.latLng);
-    }
+    vehicleLayer = L.DomUtil.create("div", "vehicle-layer leaflet-zoom-animated", carPane);
+    map.on("zoomanim", ({ center, zoom }) => {
+      // Keep advancing vehicles in the old map coordinates while their shared
+      // layer follows the same CSS zoom transition as Leaflet's tile levels.
+      zoomFrame ??= { zoom: map.getZoom(), origin: map.getPixelOrigin() };
+      const origin = map.unproject(zoomFrame.origin, zoomFrame.zoom);
+      L.DomUtil.setTransform(vehicleLayer, map._latLngToNewLayerPoint(origin, zoom, center),
+        map.getZoomScale(zoom, zoomFrame.zoom));
+    });
+    map.on("zoomend viewreset", () => {
+      zoomFrame = null;
+      L.DomUtil.setTransform(vehicleLayer, L.point(0, 0));
+      paintVehicles();
+    });
+    initialBounds = allPoints.length ? L.latLngBounds(allPoints) : coverageCircle.getBounds();
+    map.fitBounds(initialBounds, { padding: [30, 30] });
+    // The destination toolbar can wrap after its controls are populated.
+    new ResizeObserver(() => {
+      if (!document.getElementById("street-view").hidden) map.invalidateSize({ pan: false });
+    }).observe(map.getContainer());
 
-    carLayer = L.layerGroup().addTo(map);
-    map.fitBounds(L.latLngBounds(allPoints), { padding: [30, 30] });
-    updateCarScale();
-    map.on("zoomend", updateCarScale);
     ready = true;
     requestAnimationFrame(animate);
     return true;
   }
 
+  function addImportedTiles(pane, shapes, pointsOnly = false) {
+    // Index projected vertices once in fixed-size buckets at zoom 12.
+    // Leaflet requests only visible tiles, then transforms the completed
+    // tile levels during zoom and translates their pane during pan.
+    const indexZoom = 12, tileSize = 256;
+    const cells = new Map();
+    const index = (bounds, feature) => {
+      for (let y = Math.floor(bounds.min.y / tileSize); y <= Math.floor(bounds.max.y / tileSize); y++) {
+        for (let x = Math.floor(bounds.min.x / tileSize); x <= Math.floor(bounds.max.x / tileSize); x++) {
+          const key = `${x}:${y}`;
+          if (!cells.has(key)) cells.set(key, []);
+          cells.get(key).push(feature);
+        }
+      }
+    };
+    for (const shape of shapes) {
+      const points = shape.map(point => map.project(point, indexZoom));
+      const bounds = L.bounds(points);
+      index(bounds, { points, bounds });
+    }
+    const tiles = L.gridLayer({ pane, maxNativeZoom: 19, keepBuffer: 2,
+      updateWhenIdle: true, updateWhenZooming: false, noWrap: true });
+    tiles.createTile = coords => {
+      const tile = document.createElement("canvas");
+      tile.className = pointsOnly ? "road-pick-tile" : "imported-road-tile";
+      tile.setAttribute("aria-hidden", "true");
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      tile.width = tile.height = tileSize * ratio;
+      const ctx = tile.getContext("2d");
+      const scale = map.getZoomScale(coords.z, indexZoom);
+      const left = coords.x * tileSize, top = coords.y * tileSize;
+      const bounds = L.bounds([(left - 3) / scale, (top - 3) / scale],
+        [(left + tileSize + 3) / scale, (top + tileSize + 3) / scale]);
+      const features = new Set();
+      for (let y = Math.floor(bounds.min.y / tileSize); y <= Math.floor(bounds.max.y / tileSize); y++) {
+        for (let x = Math.floor(bounds.min.x / tileSize); x <= Math.floor(bounds.max.x / tileSize); x++) {
+          for (const feature of cells.get(`${x}:${y}`) || []) features.add(feature);
+        }
+      }
+      ctx.scale(ratio, ratio);
+      ctx.beginPath();
+      for (const { points, bounds: featureBounds } of features) {
+        if (!bounds.intersects(featureBounds)) continue;
+        const x = points[0].x * scale - left, y = points[0].y * scale - top;
+        if (pointsOnly) {
+          const radius = coords.z < 14 ? 1.25 : 3;
+          ctx.moveTo(x + radius, y);
+          ctx.arc(x, y, radius, 0, Math.PI * 2);
+        } else {
+          ctx.moveTo(x, y);
+          for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x * scale - left, points[i].y * scale - top);
+        }
+      }
+      if (pointsOnly) {
+        ctx.fillStyle = "#175f9b";
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fill();
+      } else {
+        ctx.strokeStyle = "#6e8197";
+        ctx.lineWidth = coords.z < 13 ? 0.85 : 2;
+        ctx.lineCap = ctx.lineJoin = "round";
+        ctx.stroke();
+      }
+      return tile;
+    };
+    if (!pointsOnly) tiles.addTo(map);
+    return tiles;
+  }
+
+  function nearestJunction(point, radius) {
+    const area = map.getBounds().pad(0.02);
+    let best = radius, closest = null;
+    for (const pick of pickPoints) {
+      if (!area.contains(pick.latLng)) continue;
+      const distance = map.latLngToContainerPoint(pick.latLng).distanceTo(point);
+      if (distance < best) { best = distance; closest = pick; }
+    }
+    return closest;
+  }
+
+  function pickImported(event, handlers) {
+    if (!importedRoads.length) return;
+    const point = event.containerPoint;
+    const picking = handlers.picking();
+    if (picking) {
+      const junction = nearestJunction(point, 9);
+      if (junction) handlers.onSelectEndpoint(junction.id);
+      return;
+    }
+    let best = 6, closest = null;
+    for (const node of intersections) {
+      const ll = endpointPositions.get(node.id);
+      if (!ll) continue;
+      const distance = map.latLngToContainerPoint(ll).distanceTo(point);
+      if (distance < best) { best = distance; closest = node; }
+    }
+    if (closest) { handlers.onSelectNode(closest.id); return; }
+    best = 10;
+    const area = L.latLngBounds(map.containerPointToLatLng(point.subtract([12, 12])),
+      map.containerPointToLatLng(point.add([12, 12])));
+    for (const road of importedRoads) {
+      if (!area.intersects(importedBounds.get(road.id))) continue;
+      const points = road.geometry.map(p => map.latLngToContainerPoint(p));
+      for (let i = 1; i < points.length; i++) {
+        const distance = L.LineUtil.pointToSegmentDistance(point, points[i - 1], points[i]);
+        if (distance < best) { best = distance; closest = road; }
+      }
+    }
+    if (closest) {
+      const start = map.latLngToContainerPoint(lookupPoints.get(closest.from).latLng);
+      const end = map.latLngToContainerPoint(lookupPoints.get(closest.to).latLng);
+      handlers.onSelectRoad(closest.id, point.distanceTo(start) <= point.distanceTo(end) ? closest.from : closest.to);
+    }
+  }
+
+  function routeGeometry(roadIds, nodeIds) {
+    return roadIds.flatMap((id, index) => {
+      const road = lookupRoads.get(id);
+      if (!road) return [];
+      const points = road.from === nodeIds[index] ? road.geometry : [...road.geometry].reverse();
+      return points.slice(index ? 1 : 0);
+    });
+  }
+
+  function busPoint(layer, point, color, label, name) {
+    const coordinates = endpointPositions.get(point.endpointId);
+    if (!coordinates) return;
+    const icon = L.divIcon({ className: point.stop ? "shuttle-stop custom-shuttle-stop" : "custom-waypoint",
+      html: `<span style="background:${color}">${label}</span>`, iconSize: [16, 16], iconAnchor: [8, 20] });
+    L.marker(coordinates, { icon, title: name, alt: name })
+      .on("click", () => pointHandlers.onSelectEndpoint(point.endpointId)).addTo(layer);
+  }
+
+  function previewBus(points, roadIds, color) {
+    if (!previewLayer) return;
+    previewLayer.clearLayers();
+    for (const id of roadIds) {
+      L.polyline(lookupRoads.get(id).geometry, { color, weight: 6,
+        dashArray: "5 6", interactive: false }).addTo(previewLayer);
+    }
+    points.forEach((point, index) => busPoint(previewLayer, point, color,
+      index === 0 ? "S" : "E", index === 0 ? "Bus start stop" : "Bus end stop"));
+  }
+
   // ---- Update from state + results ----
   function render(ctx) {
     if (!ready) return;
-    const { state, selected, roadResult, colorKey } = ctx;
-    for (const [id, layers] of Object.entries(roadLayers)) {
-      const after = roadResult("scenario", id), before = roadResult("baseline", id);
-      const closed = state.closed.has(id);
-      const lanes = state.lanes[id] || 0;
-      const width = BASE_WIDTH + lanes * LANE_WIDTH;
-      layers.line.setStyle({ color: COLORS[colorKey(after)], weight: width, dashArray: closed ? "6 10" : null });
-      layers.casing.setStyle({ weight: width + 4, opacity: closed ? 0.5 : 0.9 });
-      const isSel = selected && selected.type === "road" && selected.id === id;
-      layers.halo.setStyle({ opacity: isSel ? 0.45 : 0, weight: width + 14 });
-      if (closed) layers.xMarker.addTo(map); else layers.xMarker.remove();
+    const { state, selected, colorKey, routeIds, trafficIds, focusedBusId, customRoutes, busServices } = ctx;
+    if (importedHighlights) {
+      const styled = [];
+      for (const id of new Set([...routeIds, ...trafficIds, selected?.id])) {
+        if (!lookupRoads.has(id)) continue;
+        const key = colorKey(id);
+        if (key === "empty" && selected?.id !== id && !routeIds.has(id)) continue;
+        styled.push([id, key, routeIds.has(id), selected?.id === id]);
+      }
+      const styleKey = JSON.stringify(styled);
+      if (styleKey !== importedStyleKey) {
+        importedStyleKey = styleKey;
+        importedHighlights.clearLayers();
+        const opts = { pane: "roads", interactive: false, lineCap: "round", lineJoin: "round" };
+        for (const [id, , onRoute, isSelected] of styled) {
+          if (onRoute || isSelected) {
+            L.polyline(lookupRoads.get(id).geometry, { ...opts, color: isSelected ? COLORS.accent : "#263a58",
+              opacity: isSelected ? 0.65 : 0.22, weight: 7,
+              className: onRoute ? "trip-path" : "" }).addTo(importedHighlights);
+          }
+        }
+        for (const [id, key, onRoute] of styled) {
+          L.polyline(lookupRoads.get(id).geometry, { ...opts, color: COLORS[key], weight: onRoute ? 5.5 : 3.5,
+            dashArray: key === "closed" ? "5 6" : null,
+            className: `traffic-road traffic-${key} traffic-${id}` }).addTo(importedHighlights);
+        }
+      }
+    }
+    for (const [id, marker] of importedSignals) {
+      if (!state.signals.has(id)) { marker.remove(); importedSignals.delete(id); }
+    }
+    for (const id of state.signals.keys()) {
+      if (importedSignals.has(id)) continue;
+      const marker = L.marker(endpointPositions.get(id), { pane: "labels", icon: signalIcon(), interactive: false, keyboard: false });
+      importedSignals.set(id, marker.addTo(map));
+    }
+    customLayer.clearLayers();
+    customPaths.clear();
+    for (const route of customRoutes) {
+      const service = busServices.find(item => item.id === route.id);
+      const operating = state.busRoutes.has(route.id) && service?.operating;
+      const focused = focusedBusId === route.id;
+      const ids = operating ? service.roadIds : focused && !service?.error ? route.roadIds : [];
+      for (const id of ids) {
+        if (!lookupRoads.has(id)) continue;
+        L.polyline(lookupRoads.get(id).geometry, { color: route.color, weight: focused ? 4 : 2,
+          pane: "roads",
+          dashArray: "3 8", opacity: focused || operating ? 1 : 0.4,
+          interactive: false, className: `bus-road-${route.id}` }).addTo(customLayer);
+      }
+      if (state.busRoutes.has(route.id) || focused) route.points.forEach((point, i) => busPoint(
+        customLayer, point, route.color, i === 0 ? "S" : "E", `${route.name} ${i === 0 ? "start" : "end"} stop`));
+      if (operating) customPaths.set(route.id, { route, path: measure(routeGeometry(ids, service.nodeIds)) });
+    }
+    for (const [field, letter] of [["originId", "A"], ["destinationId", "B"]]) {
+      const coordinates = endpointPositions.get(state[field]);
+      let pin = endpointPins.get(field);
+      if (!coordinates) { pin?.remove(); continue; }
+      if (!pin) {
+        const icon = L.divIcon({
+          className: `endpoint-pin endpoint-pin-${letter}`, html: letter, iconSize: [24, 24], iconAnchor: [12, 32]
+        });
+        pin = L.marker(coordinates, { pane: "labels", icon, keyboard: false, interactive: false });
+        endpointPins.set(field, pin);
+      }
+      pin.setLatLng(coordinates).addTo(map);
+    }
 
-      let text = "";
-      if (after && before && !after.closed && after.carTrips > 0) {
-        const diff = after.carTrips - before.carTrips;
-        text = `${after.carTrips}` + (diff ? ` (${diff > 0 ? "+" : ""}${diff})` : "");
-      }
-      if (lanes && !closed) text += `${text ? " · " : ""}+${lanes} lane${lanes > 1 ? "s" : ""}`;
-      const el = layers.badge.getElement();
-      if (el) {
-        el.firstChild.textContent = text;
-        el.style.display = text ? "" : "none";
-      }
-    }
-    for (const [id, n] of Object.entries(nodeLayers)) {
-      const isSel = selected && selected.type === "node" && selected.id === id;
-      n.ring.setStyle({ fillColor: isSel ? "#ffe2c4" : "#ffffff", weight: isSel ? 4 : (n.can ? 3 : 2) });
-      if (state.signals.has(id)) n.signal.addTo(map); else n.signal.remove();
-    }
-    if (state.busEnabled) busLayer.addTo(map); else busLayer.remove();
   }
 
-  // ---- Cars (decoration: count follows car trips, speed follows travel time) ----
-  function rebuildCars(result, enabled) {
+  // Cars follow whole directed routes. Each road contributes its polyline
+  // and a bounded visual speed derived from that road's own congestion.
+  function carItinerary(assignment, origin, roadTimes) {
+    const first = lookupRoads.get(assignment.roadIds[0]);
+    let node = lookupPoints.has(origin) ? origin : first?.from;
+    const legs = [];
+    let duration = 0, distance = 0;
+    for (const id of assignment.roadIds) {
+      const road = lookupRoads.get(id);
+      const points = road?.geometry || ROAD_GEOMETRY.roads[id];
+      if (!road || !points || (node !== road.from && node !== road.to)) return null;
+      const forward = node === road.from;
+      const path = measure(forward ? points : [...points].reverse());
+      node = forward ? road.to : road.from;
+      if (!path.length) continue;
+      const ratio = roadTimes.get(id)?.congestionRatio || 0;
+      const speed = 48 / Math.min(4, 1 + 0.15 * ratio ** 4);
+      legs.push({ path, start: duration, speed });
+      duration += path.length / speed;
+      distance += path.length;
+    }
+    return { legs, duration, distance };
+  }
+
+  function sampleItinerary(itinerary, elapsed) {
+    let low = 0, high = itinerary.legs.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (itinerary.legs[middle].start <= elapsed) low = middle;
+      else high = middle - 1;
+    }
+    const { path, start, speed } = itinerary.legs[low];
+    return pointAt(path, Math.min(path.length, (elapsed - start) * speed));
+  }
+
+  function addVehicle(icon, itinerary, elapsed, bus = false) {
+    const marker = L.DomUtil.create("div", `moving-vehicle ${icon.options.className}`, vehicleLayer);
+    marker.innerHTML = icon.options.html;
+    marker.classList.toggle("moving-bus", bus);
+    cars.push({ marker, rot: marker.firstChild, itinerary, elapsed });
+  }
+
+  function rebuildCars(result, enabled, originNodeId) {
     if (!ready) return;
-    carLayer.clearLayers();
+    vehicleLayer.replaceChildren();
     cars = [];
-    if (!result || !enabled) return;
-    const times = result.baseline.roads.map(r => r.travelMinutes).filter(t => t > 0);
-    const freeFlow = times.length ? Math.min(...times) : 1;
-    let colorIndex = 0;
-    for (const road of result.scenario.roads) {
-      const layers = roadLayers[road.id];
-      if (!layers || road.closed || !road.carTrips || !road.travelMinutes) continue;
-      const { path } = layers;
-      const count = Math.max(1, Math.min(10, Math.round(road.carTrips * path.length / 14000)));
-      const speed = 55 / Math.max(road.travelMinutes / freeFlow, 1); // visual meters per second
-      for (let i = 0; i < count; i++) {
-        const s = (i + 0.5) / count * path.length;
-        const p = pointAt(path, s);
-        const marker = L.marker(p.latLng, {
-          pane: "cars", icon: carIcon(CAR_COLORS[colorIndex++ % CAR_COLORS.length]), interactive: false, keyboard: false
-        }).addTo(carLayer);
-        cars.push({ marker, path, s, speed, rot: null });
+    lastFrame = null;
+    if (!result) return;
+    for (const service of result.scenario.busRoutes || []) {
+      if (!service.operating) continue;
+      const layer = customPaths.get(service.id);
+      if (!layer?.path.length) continue;
+      const { route, path } = layer;
+      addVehicle(busIcon(route.color), { legs: [{ path, start: 0, speed: 45 }],
+        duration: path.length / 45 }, path.length / 45 * 0.15, true);
+    }
+    if (enabled) {
+      const roadTimes = new Map(result.scenario.roads.map(road => [road.id, road]));
+      let color = 0;
+      for (const assignment of result.scenario.carRoutes || []) {
+        if (!assignment.carTrips || !assignment.roadIds.length) continue;
+        const itinerary = carItinerary(assignment, assignment.nodeIds?.[0] || originNodeId, roadTimes);
+        if (!itinerary?.duration) continue;
+        const count = Math.max(2, Math.min(20, Math.ceil(itinerary.distance / 220)));
+        for (let i = 0; i < count; i++) {
+          addVehicle(carIcon(CAR_COLORS[color++ % CAR_COLORS.length]), itinerary,
+            (i + 0.5) / count * itinerary.duration);
+        }
       }
+    }
+    paintVehicles();
+  }
+
+  function paintVehicles() {
+    const zoom = zoomFrame?.zoom ?? map.getZoom();
+    const origin = zoomFrame?.origin ?? map.getPixelOrigin();
+    const scale = Math.min(1.15, Math.max(0.45, 2 ** (zoom - 17)));
+    for (const car of cars) {
+      const { itinerary, elapsed } = car;
+      // Fade at the trip ends so the next departing vehicle is distinct
+      // from the one that just arrived at its destination.
+      const fade = Math.min(0.65, itinerary.duration * 0.15);
+      const opacity = Math.min(1, elapsed / fade, (itinerary.duration - elapsed) / fade);
+      const p = sampleItinerary(itinerary, elapsed);
+      L.DomUtil.setTransform(car.marker, map.project(p.latLng, zoom).subtract(origin));
+      car.rot.style.transform = `rotate(${p.heading}deg) scale(${scale})`;
+      car.marker.style.opacity = opacity;
     }
   }
 
   function animate(time) {
-    const dt = lastFrame === null ? 0 : Math.min((time - lastFrame) / 1000, 0.1);
+    const elapsed = lastFrame === null ? 0 : (time - lastFrame) / 1000;
     lastFrame = time;
-    if (map && !document.getElementById("street-view").hidden) {
+    if (cars.length && !document.getElementById("street-view").hidden) {
       for (const car of cars) {
-        car.s = (car.s + car.speed * dt) % car.path.length;
-        const p = pointAt(car.path, car.s);
-        car.marker.setLatLng(p.latLng);
-        const el = car.marker.getElement();
-        if (!car.rot && el) car.rot = el.firstChild;
-        if (car.rot) car.rot.style.transform = `rotate(${p.heading}deg) scale(${carScale})`;
+        if (!reducedMotion) car.elapsed = (car.elapsed + elapsed) % car.itinerary.duration;
       }
+      paintVehicles();
     }
     requestAnimationFrame(animate);
   }
 
   return {
-    init, render, rebuildCars,
+    init, render, rebuildCars, previewBus,
+    previewLane: (points, roadIds) => {
+      if (!lanePreview) return;
+      lanePreview.clearLayers();
+      for (const id of roadIds) {
+        L.polyline(lookupRoads.get(id).geometry, { color: "#702e9d", opacity: 0.85,
+          weight: 7, dashArray: "6 5", interactive: false, className: "lane-preview-path" }).addTo(lanePreview);
+      }
+      points.forEach((endpointId, index) => {
+        const point = endpointPositions.get(endpointId);
+        if (!point) return;
+        const icon = L.divIcon({ className: "lane-preview-pin",
+          html: index === 0 ? "S" : "E", iconSize: [22, 22], iconAnchor: [11, 22] });
+        L.marker(point, { icon, title: index === 0 ? "Lane start" : "Lane end",
+          interactive: false, keyboard: false }).addTo(lanePreview);
+      });
+    },
+    showPicks: active => {
+      if (!pickLayer) return;
+      if (active && !map.hasLayer(pickLayer)) pickLayer.addTo(map);
+      if (!active && map.hasLayer(pickLayer)) {
+        pickLayer.remove();
+        pickTooltip.remove();
+      }
+    },
+    focusBus: (route, service) => {
+      if (!ready) return;
+      const roadIds = service?.roadIds || route.roadIds;
+      const bounds = L.latLngBounds(route.points.map(point => endpointPositions.get(point.endpointId)).filter(Boolean));
+      for (const id of roadIds) {
+        const road = lookupRoads.get(id);
+        if (road) bounds.extend(L.latLngBounds(road.geometry));
+      }
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [54, 54], maxZoom: 17 });
+    },
+    showCoverage: () => { if (coverageCircle) map.fitBounds(coverageCircle.getBounds(), { padding: [15, 15] }); },
+    revealEndpoints: ids => {
+      if (!ready || document.getElementById("street-view").hidden) return;
+      const points = ids.map(id => endpointPositions.get(id)).filter(Boolean);
+      if (points.length === 2 && points.some(point => !map.getBounds().pad(-0.12).contains(point))) {
+        map.fitBounds(L.latLngBounds(points), { padding: [52, 52], maxZoom: 16, animate: false });
+      }
+    },
     isReady: () => ready,
     missing: () => missingGeometry,
-    refreshSize: () => { if (map) map.invalidateSize(); }
+    refreshSize: () => {
+      if (!map) return;
+      map.invalidateSize({ pan: false });
+        if (initialBounds) {
+        map.fitBounds(initialBounds, { padding: [30, 30], animate: false });
+        initialBounds = null;
+      }
+    }
   };
 })();

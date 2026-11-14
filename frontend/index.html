@@ -7,7 +7,7 @@
   <!-- Leaflet 1.9.4 (BSD-2-Clause) for the street map. If it can't load, the schematic view is used. -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
   <header>
@@ -15,7 +15,7 @@
       <h1>Princeton Traffic Lab</h1>
       <p id="status" class="status" role="status">Loading…</p>
     </div>
-    <p class="subtitle">Click a road to close it or add lanes. Click an orange-ringed intersection to add a signal. Combine changes and compare with the original scenario.</p>
+    <p class="subtitle">Click a road to close it or add lanes. Click an intersection to edit its traffic signal.</p>
   </header>
 
   <main>
@@ -27,7 +27,11 @@
         </div>
         <label class="check"><input type="checkbox" id="animate-cars" checked> Animated cars</label>
         <span id="preset-area"></span>
+        <button id="coverage-view" type="button" hidden>Show import area</button>
       </div>
+      <div id="trip-controls" role="group" aria-label="Trip endpoints"></div>
+      <p id="trip-mode" class="trip-mode" role="status"></p>
+      <p id="trip-feedback" class="trip-feedback" role="status"></p>
       <p id="map-note" class="map-note" hidden></p>
 
       <div id="street-view" class="map-frame">
@@ -38,15 +42,16 @@
       </div>
 
       <div class="legend">
-        <span><i class="swatch free"></i>Light (&lt; 0.8)</span>
-        <span><i class="swatch busy"></i>Busy (0.8–1.0)</span>
-        <span><i class="swatch jam"></i>Over capacity (&gt; 1.0)</span>
+        <span><i class="swatch faster"></i>Faster than original</span>
+        <span><i class="swatch slower"></i>Slower than original</span>
+        <span><i class="swatch unchanged"></i>Same travel time</span>
         <span><i class="swatch closed"></i>Closed</span>
         <span><i class="swatch empty"></i>No car trips</span>
-        <span><i class="swatch bus"></i>Bus route</span>
-        <span><i class="dot signal-dot"></i>Signal possible</span>
+        <span><i class="swatch bus"></i>Bus line and stops</span>
+        <span><i class="swatch trip-route"></i>Calculated car route</span>
+        <span>🚦 Installed signal</span>
       </div>
-      <p class="note">Road shapes follow real streets (OpenStreetMap). Badges show car trips (change vs. original). Cars are a visual aid; the numbers come from the simulation. All traffic numbers are simulation assumptions.</p>
+      <p class="note">Road geometry © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>. Traffic volumes, road capacities, travel times, signal timing and shuttle service are simulation assumptions.</p>
     </section>
 
     <aside class="panel">
@@ -66,13 +71,36 @@
 
       <section class="card">
         <h2>Your changes</h2>
+        <button id="add-lane-map" type="button" hidden>Add Lane on Map</button>
+        <section id="lane-editor" hidden>
+          <p id="lane-status" role="status"></p>
+          <label id="lane-options-label" hidden>Choose a stretch <select id="lane-options"></select></label>
+          <button id="confirm-lane" type="button" class="primary" disabled>Confirm extra lane</button>
+          <button id="cancel-lane" type="button">Cancel</button>
+        </section>
         <ul id="changes" class="changes"></ul>
         <button id="reset" type="button">Reset</button>
       </section>
 
       <section class="card">
-        <h2>Bus route</h2>
+        <h2>Bus routes</h2>
+        <button id="create-bus" class="primary" type="button" hidden>Create Bus Route</button>
+        <section id="bus-editor" hidden>
+          <h3>Design a shuttle</h3>
+          <label for="bus-route-name">Route name</label>
+          <input id="bus-route-name" maxlength="80" autocomplete="off">
+          <ol id="bus-draft-points"></ol>
+          <p id="bus-preview-status" role="status"></p>
+          <button id="save-bus" type="button" class="primary">Save route</button>
+          <button id="cancel-bus" type="button">Cancel</button>
+        </section>
+        <p id="bus-storage" role="status"></p>
         <div id="bus-controls"></div>
+      </section>
+
+      <section class="card">
+        <button id="recommend" class="primary" type="button">Find the Best Fix</button>
+        <div id="recommendations" aria-live="polite"></div>
       </section>
 
       <section class="card">
@@ -89,7 +117,9 @@
   <script src="mock/network.js"></script>
   <script src="mock/simulate.js"></script>
   <script src="api.js"></script>
-  <script src="street-map.js"></script>
-  <script src="app.js"></script>
+  <script src="street-map.js?v=7"></script>
+  <script src="custom-bus.js?v=4"></script>
+  <script src="lane-map.js?v=2"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

@@ -5,9 +5,9 @@
   --muted: #646b7a;
   --border: #dde1e7;
   --accent: #e77500;      /* Princeton orange */
-  --free: #2e9e5b;
-  --busy: #e0a100;
-  --jam: #d0342c;
+  --faster: #19834d;
+  --slower: #c53b32;
+  --unchanged: #526778;
   --closed: #9aa1ad;
   --empty: #c9ced6;
   --map-bg: #fbfbfc;
@@ -111,10 +111,8 @@ main {
 .road.closed .x-mark { display: inline; }
 .trip-badge { font-size: 13px; font-weight: 600; fill: var(--text); pointer-events: none; paint-order: stroke; stroke: var(--map-bg); stroke-width: 4px; }
 
-/* Bus route overlay (shown when the bus is enabled) */
-#bus-layer { display: none; pointer-events: none; }
-#bus-layer.active { display: inline; }
-.bus-line { stroke: var(--bus); stroke-width: 3; stroke-dasharray: 2 7; stroke-linecap: round; }
+/* Bus route overlay */
+.bus-line { stroke: currentColor; stroke-width: 3; stroke-dasharray: 2 7; stroke-linecap: round; }
 
 /* Animated cars */
 .car { fill: #fff; stroke: var(--text); stroke-width: 1.5; pointer-events: none; }
@@ -137,9 +135,9 @@ main {
 
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 0.82rem; color: var(--muted); }
 .swatch { display: inline-block; width: 22px; height: 6px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
-.swatch.free { background: var(--free); }
-.swatch.busy { background: var(--busy); }
-.swatch.jam { background: var(--jam); }
+.swatch.faster { background: var(--faster); }
+.swatch.slower { background: var(--slower); }
+.swatch.unchanged { background: var(--unchanged); }
 .swatch.empty { background: var(--empty); }
 .swatch.closed { background: repeating-linear-gradient(90deg, var(--closed) 0 5px, transparent 5px 9px); }
 .swatch.bus { background: repeating-linear-gradient(90deg, var(--bus) 0 3px, transparent 3px 8px); }
@@ -200,3 +198,101 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .shifts li { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); }
 .shifts li:last-child { border-bottom: none; }
 .shifts .nums { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+
+/* Shuttle routes, stops and recommendation results */
+#bus-layer { display: inline; pointer-events: none; }
+#bus-layer > g { opacity: 0.5; }
+#bus-layer > .operating { opacity: 1; }
+.road-hit:focus-visible { stroke: var(--accent); stroke-opacity: 0.45; outline: none; }
+.schematic-stop, .schematic-bus rect { fill: currentColor; stroke: #fff; }
+.schematic-stop { pointer-events: auto; }
+.schematic-bus .bus-window { fill: #fff; }
+.schematic-bus { pointer-events: none; }
+.shuttle-stop span { display: block; width: 12px; height: 12px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #354052; }
+.route-swatch { width: 10px; height: 10px; border-radius: 50%; }
+.route-status { margin: 2px 0 10px; font-size: 0.8rem; }
+.approach-waits { padding-left: 18px; font-size: 0.83rem; }
+#recommendations { font-size: 0.9rem; }
+#recommendations h3 { margin: 12px 0 0; font-size: 1rem; }
+#recommendations summary { cursor: pointer; }
+.recommendation-list { list-style: none; padding: 0; }
+.recommendation-option { padding: 9px 0; border-top: 1px solid var(--border); }
+.recommendation-option p { margin: 3px 0 7px; }
+
+#trip-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 7px; }
+#trip-controls:empty, .trip-mode:empty, .trip-feedback:empty { display: none; }
+.endpoint-control { position: relative; display: flex; flex: 1 1 270px; align-items: center; gap: 6px; min-width: 0; }
+.endpoint-control label { font-size: 0.9rem; font-weight: 650; min-width: 34px; }
+.endpoint-control input { font: inherit; flex: 1; width: 0; min-width: 75px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.endpoint-control > button { padding: 6px 8px; white-space: nowrap; font-size: 0.83rem; }
+.endpoint-control > button[aria-pressed="true"] { background: #eeeaff; border-color: #6047d9; }
+.endpoint-matches { position: absolute; inset: 100% 0 auto 38px; z-index: 1100; max-height: 230px; overflow: auto; list-style: none; margin: 3px 0 0; padding: 4px; background: #fff; border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 18px #1d233026; }
+.endpoint-matches button { display: block; width: 100%; text-align: left; border: 0; padding: 5px 7px; font-size: 0.88rem; }
+.endpoint-matches button:hover, .endpoint-matches button:focus-visible { background: #eeeaff; }
+.trip-mode, .trip-feedback { margin: 0 0 8px; padding: 5px 8px; font-size: 0.85rem; border-radius: 5px; }
+.trip-mode { color: #453393; background: #eeeaff; }
+.trip-feedback { color: #8a291f; background: #ffede7; }
+.picking-endpoint .road-hit, .picking-endpoint .node, .picking-endpoint .leaflet-marker-icon { cursor: crosshair; }
+.road.on-route .halo { stroke: #6047d9; stroke-opacity: 0.7; }
+.swatch.trip-route { background: var(--unchanged); outline: 1px solid #263a5838; }
+.endpoint-pin { display: grid; place-items: center; font-size: 13px; font-weight: 750; color: #fff; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 1px 4px #1d233055; pointer-events: none; }
+.endpoint-pin-A { --pin: #0e7265; }
+.endpoint-pin-B { --pin: #8237a4; }
+.endpoint-pin { background: var(--pin); }
+.schematic-pin { pointer-events: none; }
+.schematic-pin circle { fill: var(--pin); stroke: white; stroke-width: 2; }
+.schematic-pin text { fill: white; font-size: 12px; font-weight: 700; }
+.schematic-landmark, .landmark-icon span { fill: #8b4923; background: #8b4923; stroke: #fff; stroke-width: 1.5; }
+.landmark-icon span { display: block; width: 14px; height: 14px; border: 2px solid white; border-radius: 4px; box-shadow: 0 1px 3px #1d233055; }
+.schematic-landmark, .schematic-stop { cursor: pointer; }
+
+.schematic-imported-roads { fill:none; stroke:#8797a9; stroke-width:0.65; pointer-events:none; }
+.schematic-coverage { fill:#f0f5fb; stroke:#52739a; stroke-width:1; stroke-dasharray:5 5; }
+#bus-editor { border-top:1px solid var(--border); padding:9px 0; }
+#bus-editor h3 { margin:0 0 8px; font-size:1rem; }
+#bus-editor label { display:block; margin-top:6px; font-size:.85rem; }
+#bus-editor input, #bus-editor select { width:100%; font:inherit; }
+#bus-draft-points { padding-left:1.4em; font-size:.84rem; }
+#bus-draft-points li { margin:.3em 0; }
+#bus-draft-points span { display:inline-block; width:64%; vertical-align:middle; }
+#bus-draft-points button { padding:1px 5px; }
+#bus-storage:empty { display:none; }
+.custom-route-actions { display:flex; gap:.4em; margin-bottom:.65em; }
+.custom-route-actions button { padding:2px 8px; font-size:.8rem; }
+.custom-shuttle-stop span, .custom-waypoint span { display:grid; place-items:center; width:16px; height:16px; color:white; font-weight:700; border:1px solid white; border-radius:4px; }
+
+.vehicle-layer { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+.moving-vehicle { position: absolute; left: 0; top: 0; }
+.moving-vehicle .car-rot { margin: -13px 0 0 -7px; }
+.moving-bus { z-index: 1; }
+
+#create-bus { width: 100%; margin-bottom: 8px; }
+#bus-draft-points button[aria-pressed="true"] { border-color: var(--accent); }
+.bus-route-entry { padding-top: 6px; }
+.route-stops { margin: 2px 0; font-size: .8rem; }
+.bus-route-entry + .bus-route-entry { border-top: 1px solid var(--border); }
+.bus-line-controls { display: flex; align-items: center; gap: 6px; }
+.bus-line-name { padding: 2px 6px; font-weight: 650; border: 0; background: transparent; text-align: left; }
+.bus-line-name:hover, .bus-line-name[aria-pressed="true"] { background: #edf1f6; }
+
+#add-lane-map { margin-bottom: 8px; }
+#lane-editor { margin-bottom: 10px; }
+#lane-status { font-size: .85rem; margin: 4px 0 8px; }
+#lane-options-label { font-size: .85rem; margin-bottom: 8px; }
+#lane-options-label:not([hidden]) { display: block; }
+#lane-options { display: block; max-width: 100%; }
+.lane-preview-pin { display: grid; place-items: center; border-radius: 50%; background: #702e9d;
+  color: white; border: 2px solid white; font-weight: 700; box-shadow: 0 1px 5px #0004; }
+
+.schematic-junction-picks { display: none; fill: none; stroke: #175f9b; stroke-width: 2.6; stroke-linecap: round; pointer-events: none; }
+.picking-endpoint .schematic-junction-picks { display: inline; }
+.endpoint-pin::after, .custom-shuttle-stop::after, .lane-preview-pin::after {
+  content: ""; position: absolute; left: 50%; top: var(--pin-tip, 31px);
+  width: 5px; height: 5px; transform: translate(-50%, -50%);
+  border: 1px solid white; border-radius: 50%; background: #175f9b;
+}
+.custom-shuttle-stop { --pin-tip: 20px; }
+.lane-preview-pin { --pin-tip: 21px; }
+.picking-endpoint #leaflet-map :is(.landmark-icon, .venue-icon, .custom-shuttle-stop) {
+  pointer-events: none;
+}

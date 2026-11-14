@@ -1,9 +1,9 @@
 // Real street geometry for the simulation roads, keyed by the shared road and intersection IDs.
-// Source: OpenStreetMap contributors (ODbL), downloaded 2026-11-14 via the Overpass API.
+// Source: OpenStreetMap contributors (ODbL), downloaded 2026-11-14 via Overpass and the OpenStreetMap API.
 // Built by geo/tools/build_geo.py: each road follows the named OSM streets between its two
 // intersections (e.g. nassau_mercer = Nassau St west, then Mercer St south). Points are [lat, lon]
 // in from -> to order. The simulation's x/y values stay schematic; this file only affects drawing.
-const ROAD_GEOMETRY = {"intersections":{"int_nassau_wash":[40.350392,-74.657115],"int_nassau_univ":[40.348728,-74.663057],"int_mercer_alex":[40.34659,-74.664668],"int_alex_univ":[40.343341,-74.661147],"int_alex_faculty":[40.337897,-74.656948],"int_wash_prospect":[40.347819,-74.655038],"int_wash_goheen":[40.345405,-74.65319],"int_wash_faculty":[40.341157,-74.649824],"int_prospect_olden":[40.348878,-74.651127]},"landmarks":{"jrr":{"name":"Julis Romo Rabinowitz Building","latLng":[40.349138,-74.655549]}},"roads":{"nassau_west":[
+const ROAD_GEOMETRY = {"intersections":{"int_nassau_wash":[40.350392,-74.657115],"int_nassau_univ":[40.348728,-74.663057],"int_mercer_alex":[40.34659,-74.664668],"int_alex_univ":[40.343341,-74.661147],"int_alex_faculty":[40.337897,-74.656948],"int_wash_prospect":[40.347819,-74.655038],"int_wash_goheen":[40.345405,-74.65319],"int_wash_faculty":[40.341157,-74.649824],"int_prospect_olden":[40.348878,-74.651127],"int_nassau_charlton":[40.351376,-74.654067],"int_nassau_olden":[40.351849,-74.65252],"int_william_charlton":[40.350339,-74.653525],"int_olden_william":[40.350853,-74.652054]},"landmarks":{"jrr":{"name":"Julis Romo Rabinowitz Building","latLng":[40.349138,-74.655549]}},"roads":{"nassau_west":[
   [40.350392,-74.657115],
   [40.350356,-74.657241],
   [40.350259,-74.657589],
@@ -230,4 +230,63 @@ const ROAD_GEOMETRY = {"intersections":{"int_nassau_wash":[40.350392,-74.657115]
   [40.348555,-74.65232],
   [40.348593,-74.652181],
   [40.34875,-74.651597],
-  [40.348878,-74.651127]]}};
+  [40.348878,-74.651127]],
+"nassau_charlton":[
+  [40.350392,-74.657115],
+  [40.350427,-74.657008],
+  [40.350827,-74.65579],
+  [40.35089,-74.655596],
+  [40.351036,-74.655148],
+  [40.351119,-74.654894],
+  [40.351133,-74.654851],
+  [40.351199,-74.654642],
+  [40.351261,-74.654438],
+  [40.351284,-74.654363],
+  [40.351376,-74.654067]
+],
+"nassau_olden":[
+  [40.351376,-74.654067],
+  [40.3514,-74.65399],
+  [40.351434,-74.653881],
+  [40.35146,-74.653796],
+  [40.351656,-74.653164],
+  [40.351739,-74.652882],
+  [40.351826,-74.652597],
+  [40.351849,-74.65252]
+],
+"charlton_south":[
+  [40.351376,-74.654067],
+  [40.351304,-74.654029],
+  [40.350951,-74.653843],
+  [40.350394,-74.653554],
+  [40.350339,-74.653525]
+],
+"william_east":[
+  [40.350339,-74.653525],
+  [40.35036,-74.653467],
+  [40.350544,-74.652929],
+  [40.350794,-74.652221],
+  [40.350826,-74.652131],
+  [40.350853,-74.652054]
+],
+"olden_north":[
+  [40.351849,-74.65252],
+  [40.351785,-74.65249],
+  [40.351577,-74.652392],
+  [40.351501,-74.652356],
+  [40.351362,-74.65229],
+  [40.351184,-74.652206],
+  [40.351018,-74.652127],
+  [40.350853,-74.652054]
+],
+"olden_south":[
+  [40.350853,-74.652054],
+  [40.350804,-74.652031],
+  [40.350147,-74.651723],
+  [40.350034,-74.651669],
+  [40.35002,-74.651663],
+  [40.349626,-74.651477],
+  [40.349513,-74.651424],
+  [40.34896,-74.651164],
+  [40.348878,-74.651127]
+]}};
