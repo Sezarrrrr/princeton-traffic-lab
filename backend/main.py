@@ -104,4 +104,4 @@ def simulate(request: SimulationRequest):
         "baseline": simulate_closures(set(), {}),
         "scenario": simulate_closures(closed_roads, extra_lanes),
     }
-    }
+    
