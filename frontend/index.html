@@ -9,12 +9,16 @@
 <body>
   <header>
     <h1>Princeton Traffic Lab</h1>
-    <p class="subtitle">Click a road on the map to close or reopen it, then compare the original and modified scenarios.</p>
-    <p id="status" class="status">Loading…</p>
+    <p class="subtitle">Click a road to close it or add lanes. Click an orange-ringed intersection to add a signal. Combine changes and compare with the original scenario.</p>
+    <p id="status" class="status" role="status">Loading…</p>
   </header>
 
   <main>
     <section class="map-card" aria-label="Road map">
+      <div class="map-toolbar">
+        <label class="check"><input type="checkbox" id="animate-cars" checked> Animated cars</label>
+        <span id="preset-area"></span>
+      </div>
       <svg id="map" viewBox="0 0 820 620" role="img" aria-label="Schematic map of roads around Princeton University"></svg>
       <div class="legend">
         <span><i class="swatch free"></i>Light (&lt; 0.8)</span>
@@ -22,28 +26,36 @@
         <span><i class="swatch jam"></i>Over capacity (&gt; 1.0)</span>
         <span><i class="swatch closed"></i>Closed</span>
         <span><i class="swatch empty"></i>No car trips</span>
+        <span><i class="swatch bus"></i>Bus route</span>
+        <span><i class="dot signal-dot"></i>Signal possible</span>
       </div>
-      <p class="note">Layout is schematic, not to scale. Traffic numbers are simulation assumptions.</p>
+      <p class="note">Layout is schematic, not to scale. Badges show car trips (change vs. original). Cars are a visual aid; the numbers come from the simulation. All traffic numbers are simulation assumptions.</p>
     </section>
 
     <aside class="panel">
       <section id="selected" class="card">
-        <h2>Selected road</h2>
-        <p class="muted">Click a road on the map.</p>
+        <h2>Selected</h2>
+        <p class="muted">Click a road or intersection on the map.</p>
+      </section>
+
+      <section class="card">
+        <h2>Bus route</h2>
+        <div id="bus-controls"></div>
+      </section>
+
+      <section class="card">
+        <h2>Your changes</h2>
+        <ul id="changes" class="changes"></ul>
+        <button id="reset" type="button">Reset</button>
       </section>
 
       <section class="card">
         <h2>Original vs. modified</h2>
         <table class="compare">
           <thead><tr><th></th><th>Original</th><th>Modified</th></tr></thead>
-          <tbody>
-            <tr><th scope="row">Avg. car trip</th><td id="avg-before">–</td><td id="avg-after">–</td></tr>
-            <tr><th scope="row">Unserved car trips</th><td id="unserved-before">–</td><td id="unserved-after">–</td></tr>
-            <tr><th scope="row">Shifted to bus</th><td id="bus-before">–</td><td id="bus-after">–</td></tr>
-          </tbody>
+          <tbody id="compare-body"></tbody>
         </table>
-        <p id="closed-list" class="muted">No roads closed.</p>
-        <button id="reset" type="button">Reset</button>
+        <p id="conservation" class="small muted"></p>
       </section>
 
       <section class="card">

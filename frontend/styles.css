@@ -11,6 +11,7 @@
   --closed: #9aa1ad;
   --empty: #c9ced6;
   --map-bg: #fbfbfc;
+  --bus: #2f6fdb;
 }
 
 * { box-sizing: border-box; }
@@ -61,13 +62,33 @@ main {
 .road:hover .halo, .road:focus .halo { stroke-opacity: 0.35; }
 .road.selected .halo { stroke-opacity: 0.6; }
 .road:focus { outline: none; }
-.road .x-mark { stroke: var(--jam); stroke-width: 4; stroke-linecap: round; pointer-events: none; }
-.road .trip-badge { font-size: 13px; font-weight: 600; fill: var(--text); pointer-events: none; paint-order: stroke; stroke: var(--map-bg); stroke-width: 4px; }
+.road .x-mark { stroke: var(--jam); stroke-width: 4; stroke-linecap: round; pointer-events: none; display: none; }
+.road.closed .x-mark { display: inline; }
+.trip-badge { font-size: 13px; font-weight: 600; fill: var(--text); pointer-events: none; paint-order: stroke; stroke: var(--map-bg); stroke-width: 4px; }
+
+/* Bus route overlay (shown when the bus is enabled) */
+#bus-layer { display: none; pointer-events: none; }
+#bus-layer.active { display: inline; }
+.bus-line { stroke: var(--bus); stroke-width: 3; stroke-dasharray: 2 7; stroke-linecap: round; }
+
+/* Animated cars */
+.car { fill: #fff; stroke: var(--text); stroke-width: 1.5; pointer-events: none; }
 
 /* Intersections */
-.node circle { fill: #fff; stroke: var(--text); stroke-width: 2; }
-.node.signal circle { stroke: var(--accent); stroke-width: 3; }
-.node text { font-size: 12px; fill: var(--muted); pointer-events: none; paint-order: stroke; stroke: var(--map-bg); stroke-width: 4px; }
+.node { cursor: pointer; }
+.node:focus { outline: none; }
+.node .dot { fill: #fff; stroke: var(--text); stroke-width: 2; }
+.node .ring { fill: none; stroke: transparent; stroke-width: 3; }
+.node.can-signal .ring { stroke: var(--accent); stroke-opacity: 0.55; }
+.node:hover .ring, .node:focus .ring { stroke: var(--accent); stroke-opacity: 0.8; }
+.node.selected .ring { stroke: var(--accent); stroke-opacity: 1; stroke-width: 4; }
+.node .node-label { font-size: 12px; fill: var(--muted); pointer-events: none; paint-order: stroke; stroke: var(--map-bg); stroke-width: 4px; }
+.node .signal-icon { display: none; pointer-events: none; }
+.node.has-signal .signal-icon { display: inline; }
+.signal-icon rect { fill: #2b2f38; }
+.signal-icon .lamp.red { fill: #ff5a4f; }
+.signal-icon .lamp.amber { fill: #6b5a1e; }
+.signal-icon .lamp.green { fill: #3ddc84; }
 
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 0.82rem; color: var(--muted); }
 .swatch { display: inline-block; width: 22px; height: 6px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
@@ -76,6 +97,29 @@ main {
 .swatch.jam { background: var(--jam); }
 .swatch.empty { background: var(--empty); }
 .swatch.closed { background: repeating-linear-gradient(90deg, var(--closed) 0 5px, transparent 5px 9px); }
+.swatch.bus { background: repeating-linear-gradient(90deg, var(--bus) 0 3px, transparent 3px 8px); }
+.dot.signal-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent); margin-right: 6px; vertical-align: middle; }
+
+.map-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; cursor: pointer; }
+
+.actions { margin: 12px 0 4px; }
+.stepper { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 0.92rem; }
+.stepper span { flex: 1; }
+.stepper button { width: 34px; padding: 4px 0; font-weight: 700; }
+.stepper .count { min-width: 1.5em; text-align: center; font-variant-numeric: tabular-nums; }
+button:disabled { opacity: 0.45; cursor: not-allowed; border-color: var(--border); }
+
+.slider { margin-top: 12px; }
+.slider label { display: block; font-size: 0.92rem; }
+.slider input[type="range"] { width: 100%; accent-color: var(--accent); margin: 6px 0 2px; }
+
+.changes { list-style: none; margin: 0 0 12px; padding: 0; font-size: 0.9rem; }
+.changes li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.changes li:last-child { border-bottom: none; }
+button.link { border: none; background: none; padding: 2px 4px; color: var(--accent); font-size: 0.85rem; }
+button.link:hover { text-decoration: underline; }
+#conservation { margin: 10px 0 0; }
 .note { margin: 6px 0 0; font-size: 0.78rem; color: var(--muted); }
 
 .muted { color: var(--muted); }

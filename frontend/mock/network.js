@@ -2,6 +2,7 @@
 // Key names confirmed with Sizar: intersections, roads, signalIntersections, busRoute (may be null).
 // Road and intersection IDs and names come from testing/road-network.md (Draft v2,
 // sources: map.princeton.edu and facilities.princeton.edu/maps).
+// Signal intersections and the bus route follow testing/test-plan.md (TC-05, TC-06, TC-07).
 // x/y are a PLACEHOLDER schematic layout (north is up), NOT real coordinates.
 const MOCK_NETWORK = {
   intersections: [
@@ -27,6 +28,9 @@ const MOCK_NETWORK = {
     { id: "faculty_rd",    name: "Faculty Road",                            from: "int_wash_faculty",  to: "int_alex_faculty" },
     { id: "prospect_ave",  name: "Prospect Avenue",                         from: "int_wash_prospect", to: "int_prospect_olden" }
   ],
-  signalIntersections: ["int_wash_prospect"],
-  busRoute: null
+  signalIntersections: ["int_wash_prospect", "int_nassau_univ"],
+  busRoute: {
+    name: "TigerTransit Station Connector",
+    roadIds: ["wash_north", "wash_mid", "wash_south", "faculty_rd", "alex_station"]
+  }
 };

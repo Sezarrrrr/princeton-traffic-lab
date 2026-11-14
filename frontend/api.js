@@ -5,16 +5,26 @@ const CONFIG = {
   apiBase: "http://localhost:8000"
 };
 
+// fetch() only throws when the server can't be reached at all (not running, wrong port,
+// or blocked by the browser because the backend hasn't enabled CORS).
+async function request(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (err) {
+    throw new Error(`can't reach the backend at ${CONFIG.apiBase}. Is it running, with CORS enabled?`);
+  }
+}
+
 async function fetchNetwork() {
   if (CONFIG.useMock) return structuredClone(MOCK_NETWORK);
-  const res = await fetch(`${CONFIG.apiBase}/api/network`);
+  const res = await request(`${CONFIG.apiBase}/api/network`);
   if (!res.ok) throw new Error(`GET /api/network failed (${res.status})`);
   return res.json();
 }
 
 async function fetchSimulation(scenario) {
   if (CONFIG.useMock) return mockSimulate(scenario);
-  const res = await fetch(`${CONFIG.apiBase}/api/simulate`, {
+  const res = await request(`${CONFIG.apiBase}/api/simulate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(scenario)
