@@ -1,7 +1,9 @@
-// Talks to the backend, or to the mock files while the backend isn't ready.
-// To use Sizar's FastAPI server, set useMock to false (or open the page with ?api=real).
+// Talks to the backend, or to the in-browser simulator (sim/engine.js).
+// Default: the in-browser simulator on the expanded network, with custom trips and intersection
+// controls. Open the page with ?api=real to use Sizar's FastAPI server instead (core network,
+// closures and extra lanes).
 const CONFIG = {
-  useMock: !new URLSearchParams(location.search).has("api"),
+  useLocal: !new URLSearchParams(location.search).has("api"),
   apiBase: "http://localhost:8000"
 };
 
@@ -16,14 +18,14 @@ async function request(url, options) {
 }
 
 async function fetchNetwork() {
-  if (CONFIG.useMock) return structuredClone(MOCK_NETWORK);
+  if (CONFIG.useLocal) return LocalSim.network();
   const res = await request(`${CONFIG.apiBase}/api/network`);
   if (!res.ok) throw new Error(`GET /api/network failed (${res.status})`);
   return res.json();
 }
 
 async function fetchSimulation(scenario) {
-  if (CONFIG.useMock) return mockSimulate(scenario);
+  if (CONFIG.useLocal) return LocalSim.simulate(scenario);
   const res = await request(`${CONFIG.apiBase}/api/simulate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

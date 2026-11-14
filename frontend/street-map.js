@@ -8,7 +8,8 @@ const StreetMap = (() => {
     ? "http://127.0.0.1:9/{z}/{x}/{y}.png"
     : "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-  const COLORS = { free: "#2e9e5b", busy: "#e0a100", jam: "#d0342c", closed: "#9aa1ad", empty: "#a9b0bb", bus: "#2f6fdb", accent: "#e77500" };
+  const COLORS = { free: "#2e9e5b", busy: "#e0a100", jam: "#d0342c", closed: "#9aa1ad", empty: "#a9b0bb", nocar: "#c3c8d0", bus: "#2f6fdb", accent: "#e77500", route: "#7b3fd1" };
+  const DRIVE_SIDE_METERS = 4;  // directional cars drive this far right of the road centerline
   const BASE_WIDTH = 7, LANE_WIDTH = 4;
   // Visual only: which way cars drive along each road. Trips in the road doc run from
   // Nassau & Washington to Princeton Station, so Route A uses alex_station from Faculty Rd north.
@@ -24,6 +25,9 @@ const StreetMap = (() => {
   let cars = [];
   let lastFrame = null;
   let missingGeometry = [];
+  let lab = false;            // in-browser simulator: per-direction cars, control icons, trips
+  let placeLayer = null, tripLayer = null, routeLayer = null;
+  let routeKey = "", placeKey = "";
   let carScale = 1;           // cars shrink when zoomed out so they don't hide the road colors
   const updateCarScale = () => { carScale = Math.min(1.15, Math.max(0.55, Math.pow(2, map.getZoom() - 17))); };
 
@@ -45,6 +49,20 @@ const StreetMap = (() => {
     const cum = [0];
     for (let i = 1; i < points.length; i++) cum.push(cum[i - 1] + meters(points[i - 1], points[i]));
     return { points, cum, length: cum[cum.length - 1] };
+  }
+  // Shift a polyline to the right of its direction of travel (right-hand traffic).
+  function offsetRight(points, m) {
+    const out = [];
+    for (let i = 0; i < points.length; i++) {
+      const a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)];
+      const lat = points[i][0] * Math.PI / 180;
+      const dx = (b[1] - a[1]) * Math.cos(lat), dy = b[0] - a[0];
+      const len = Math.hypot(dx, dy) || 1;
+      // right-hand normal of (dx, dy) is (dy, -dx); convert meters back to degrees
+      const east = (dy / len) * m, north = (-dx / len) * m;
+      out.push([points[i][0] + north / 111320, points[i][1] + east / (111320 * Math.cos(lat))]);
+    }
+    return out;
   }
   function pointAt(path, s) { // position and heading at distance s along the path
     const { points, cum } = path;
@@ -78,10 +96,24 @@ const StreetMap = (() => {
     iconSize: [14, 30], iconAnchor: [-6, 34]
   });
   const textIcon = (cls, text) => L.divIcon({ className: cls, html: `<span>${text}</span>`, iconSize: null });
+  const OCTAGON = "6,1 14,1 19,6 19,14 14,19 6,19 1,14 1,6";
+  const controlIcons = {
+    signal: signalIcon,
+    stop_all: () => L.divIcon({ className: "map-ctl", iconSize: [20, 20], iconAnchor: [-6, 26],
+      html: `<svg width="20" height="20" viewBox="0 0 20 20"><polygon points="${OCTAGON}" fill="#c8102e" stroke="#fff" stroke-width="1.5"/><text x="10" y="13.5" text-anchor="middle" font-size="7.5" font-weight="700" fill="#fff" font-family="system-ui,sans-serif">ALL</text></svg>` }),
+    stop_minor: () => L.divIcon({ className: "map-ctl", iconSize: [16, 16], iconAnchor: [-6, 22],
+      html: `<svg width="16" height="16" viewBox="0 0 20 20"><polygon points="${OCTAGON}" fill="#c8102e" stroke="#fff" stroke-width="1.8"/><rect x="5" y="8.6" width="10" height="2.8" fill="#fff"/></svg>` }),
+    roundabout: () => L.divIcon({ className: "map-ctl", iconSize: [20, 20], iconAnchor: [-6, 26],
+      html: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="#2f6fdb" stroke="#fff" stroke-width="1.5"/><path d="M10 4.5a5.5 5.5 0 1 1-5.2 3.7" fill="none" stroke="#fff" stroke-width="1.8"/><path d="M3.2 6.2l1.8 2.6 2.4-1.9" fill="none" stroke="#fff" stroke-width="1.6"/></svg>' })
+  };
+  const pointIcon = (cls, text) => L.divIcon({ className: "trip-point", iconSize: [22, 22], iconAnchor: [11, 11], html: `<span class="tp ${cls}">${text}</span>` });
+  const placeIcon = builtIn => L.divIcon({ className: "place-icon", iconSize: [12, 12], iconAnchor: [6, 6], html: `<span class="pl ${builtIn ? "landmark" : "pin"}"></span>` });
 
   // ---- Setup ----
   function init(network, handlers, onTilesFailed) {
     if (typeof L === "undefined" || typeof ROAD_GEOMETRY === "undefined") return false;
+    lab = !!(network.capabilities && network.capabilities.lab);
+    handlersRef = handlers;
 
     map = L.map("leaflet-map", { zoomSnap: 0.25, zoomDelta: 0.5, scrollWheelZoom: true, preferCanvas: false });
     let loaded = 0, failed = 0, reported = false;
@@ -108,19 +140,20 @@ const StreetMap = (() => {
       if (!pts || pts.length < 2) { missingGeometry.push(road.id); continue; }
       allPoints.push(...pts);
       const path = measure(REVERSE_FLOW.has(road.id) ? [...pts].reverse() : pts);
+      const lanesPaths = { forward: measure(offsetRight(pts, DRIVE_SIDE_METERS)), backward: measure(offsetRight([...pts].reverse(), DRIVE_SIDE_METERS)) };
       const mid = pointAt(measure(pts), measure(pts).length / 2).latLng;
       const opts = { pane: "roads", lineCap: "round", lineJoin: "round" };
       const layers = {
-        path,
+        path, lanesPaths, pts,
         halo: L.polyline(pts, { ...opts, color: COLORS.accent, weight: 20, opacity: 0, interactive: false }),
         casing: L.polyline(pts, { ...opts, color: "#ffffff", weight: BASE_WIDTH + 4, opacity: 0.9, interactive: false }),
         line: L.polyline(pts, { ...opts, color: COLORS.empty, weight: BASE_WIDTH, opacity: 0.95, interactive: false }),
-        hit: L.polyline(pts, { ...opts, color: "#000", weight: 26, opacity: 0.001, className: `road-hit road-hit-${road.id}` }),
+        hit: L.polyline(pts, { ...opts, color: "#000", weight: 26, opacity: 0.001, className: `road-hit road-hit-${road.id}`, bubblingMouseEvents: false }),
         xMarker: L.marker(mid, { pane: "labels", icon: textIcon("map-x", "✕"), interactive: false }),
         badge: L.marker(mid, { pane: "labels", icon: textIcon("map-badge", ""), interactive: false })
       };
       layers.hit.bindTooltip(road.name, { sticky: true, direction: "top", className: "road-tip" });
-      layers.hit.on("click", () => handlers.onSelectRoad(road.id));
+      layers.hit.on("click", e => handlers.onSelectRoad(road.id, e.latlng));
       for (const key of ["halo", "casing", "line", "hit", "badge"]) layers[key].addTo(map);
       roadLayers[road.id] = layers;
     }
@@ -136,22 +169,27 @@ const StreetMap = (() => {
     for (const inter of network.intersections) {
       const ll = ROAD_GEOMETRY.intersections[inter.id];
       if (!ll) continue;
-      const can = signals.has(inter.id);
+      const can = !lab && signals.has(inter.id);
       const ring = L.circleMarker(ll, {
-        pane: "roads", radius: can ? 9 : 6, weight: can ? 3 : 2,
+        pane: "roads", radius: can || lab ? 8 : 6, weight: can ? 3 : 2, bubblingMouseEvents: false,
         color: can ? COLORS.accent : "#1d2330", fillColor: "#ffffff", fillOpacity: 1
       });
       ring.bindTooltip(inter.name + (can ? " (signal possible)" : ""), { direction: "top", className: "road-tip" });
       ring.on("click", () => handlers.onSelectNode(inter.id));
       ring.addTo(map);
-      nodeLayers[inter.id] = { ring, can, signal: L.marker(ll, { pane: "labels", icon: signalIcon(), interactive: false }) };
+      nodeLayers[inter.id] = { ring, can, ll, ctlKey: "none", ctlMarker: null };
     }
+    placeLayer = L.layerGroup().addTo(map);
+    tripLayer = L.layerGroup().addTo(map);
+    routeLayer = L.layerGroup().addTo(map);
+    map.on("click", e => handlers.onMapClick && handlers.onMapClick(e.latlng));
 
     // "You are here": Julis Romo Rabinowitz Building (HackPrinceton venue).
     const venue = ROAD_GEOMETRY.landmarks && ROAD_GEOMETRY.landmarks.jrr;
     if (venue) {
       L.marker(venue.latLng, { icon: venueIcon(), keyboard: false, zIndexOffset: 1000 })
         .bindTooltip(`<strong>You are here</strong><br>${venue.name}`, { permanent: true, direction: "right", offset: [12, 0], className: "venue-label" })
+        .on("click", e => handlers.onMapClick && handlers.onMapClick(e.latlng))
         .addTo(map);
       allPoints.push(venue.latLng);
     }
@@ -195,9 +233,63 @@ const StreetMap = (() => {
     for (const [id, n] of Object.entries(nodeLayers)) {
       const isSel = selected && selected.type === "node" && selected.id === id;
       n.ring.setStyle({ fillColor: isSel ? "#ffe2c4" : "#ffffff", weight: isSel ? 4 : (n.can ? 3 : 2) });
-      if (state.signals.has(id)) n.signal.addTo(map); else n.signal.remove();
+      const key = ctx.controlOf ? ctx.controlOf(id).type : "none";
+      if (key !== n.ctlKey) {
+        if (n.ctlMarker) n.ctlMarker.remove();
+        n.ctlMarker = controlIcons[key] ? L.marker(n.ll, { pane: "labels", icon: controlIcons[key](), interactive: false, keyboard: false }).addTo(map) : null;
+        n.ctlKey = key;
+      }
     }
     if (state.busEnabled) busLayer.addTo(map); else busLayer.remove();
+    if (lab) renderLab(ctx);
+  }
+
+  // Places, trip end points, and the selected trip's route.
+  function renderLab(ctx) {
+    const pk = JSON.stringify((ctx.places || []).map(p => [p.id, p.name]));
+    if (pk !== placeKey) {
+      placeKey = pk;
+      placeLayer.clearLayers();
+      for (const p of ctx.places || []) {
+        L.marker(p.latLng, { pane: "labels", icon: placeIcon(p.builtIn), keyboard: false, bubblingMouseEvents: false })
+          .bindTooltip(p.name + (p.builtIn ? "" : " (your place)"), { direction: "top", className: "road-tip" })
+          .on("click", e => handlersRef.onMapClick && handlersRef.onMapClick(e.latlng))
+          .addTo(placeLayer);
+      }
+    }
+    tripLayer.clearLayers();
+    const sel = ctx.route && ctx.route.trip;
+    for (const t of ctx.trips || []) {
+      if (!t || !t.fromLatLng || !t.toLatLng) continue;
+      const active = sel && sel.id === t.id;
+      if (!active && t.builtIn) continue; // the let-out's ends are shown only when it's selected
+      const opacity = active || !sel ? 1 : 0.45;
+      for (const [ll, nodeId, cls, text] of [[t.fromLatLng, t.fromNodeId, "a", "A"], [t.toLatLng, t.toNodeId, "b", "B"]]) {
+        const snap = nodeId && ROAD_GEOMETRY.intersections[nodeId];
+        if (snap && meters(ll, snap) > 15) L.polyline([ll, snap], { pane: "labels", color: "#1d2330", weight: 2, dashArray: "3 5", opacity: 0.7 * opacity, interactive: false }).addTo(tripLayer);
+        L.marker(ll, { pane: "labels", icon: pointIcon(cls, text), interactive: false, keyboard: false, opacity }).addTo(tripLayer);
+      }
+    }
+    const rk = JSON.stringify(ctx.route ? [ctx.route.before, ctx.route.after] : null);
+    if (rk === routeKey) return;
+    routeKey = rk;
+    routeLayer.clearLayers();
+    if (!ctx.route) return;
+    const line = steps => steps.flatMap(s => {
+      const pts = ROAD_GEOMETRY.roads[s.roadId] || [];
+      return s.dir === -1 ? [...pts].reverse() : pts;
+    });
+    const before = line(ctx.route.before), after = line(ctx.route.after);
+    if (before.length) L.polyline(before, { pane: "roads", color: "#1d2330", weight: 4, opacity: 0.75, dashArray: "8 8", interactive: false }).addTo(routeLayer);
+    if (after.length) {
+      L.polyline(after, { pane: "roads", color: "#ffffff", weight: 11, opacity: 0.9, interactive: false }).addTo(routeLayer);
+      L.polyline(after, { pane: "roads", color: COLORS.route, weight: 6, opacity: 0.95, interactive: false }).addTo(routeLayer);
+    }
+  }
+  let handlersRef = {};
+
+  function setPicking(on) {
+    if (map) map.getContainer().classList.toggle("picking", on);
   }
 
   // ---- Cars (decoration: count follows car trips, speed follows travel time) ----
@@ -209,20 +301,32 @@ const StreetMap = (() => {
     const times = result.baseline.roads.map(r => r.travelMinutes).filter(t => t > 0);
     const freeFlow = times.length ? Math.min(...times) : 1;
     let colorIndex = 0;
+    const addCar = (path, s, speed) => {
+      const p = pointAt(path, s);
+      const marker = L.marker(p.latLng, {
+        pane: "cars", icon: carIcon(CAR_COLORS[colorIndex++ % CAR_COLORS.length]), interactive: false, keyboard: false
+      }).addTo(carLayer);
+      cars.push({ marker, path, s, speed, rot: null });
+    };
     for (const road of result.scenario.roads) {
       const layers = roadLayers[road.id];
       if (!layers || road.closed || !road.carTrips || !road.travelMinutes) continue;
+      // In-browser simulator: cars in each direction, on the right-hand side, speed from that direction.
+      if (road.forward !== undefined) {
+        for (const key of ["forward", "backward"]) {
+          const d = road[key];
+          if (!d || !d.cars) continue;
+          const path = layers.lanesPaths[key];
+          const count = Math.max(1, Math.min(8, Math.round(d.cars * path.length / 14000)));
+          const speed = 55 / Math.max(d.minutes / Math.max(d.freeMinutes, 0.01), 1);
+          for (let i = 0; i < count; i++) addCar(path, (i + 0.5) / count * path.length, speed);
+        }
+        continue;
+      }
       const { path } = layers;
       const count = Math.max(1, Math.min(10, Math.round(road.carTrips * path.length / 14000)));
       const speed = 55 / Math.max(road.travelMinutes / freeFlow, 1); // visual meters per second
-      for (let i = 0; i < count; i++) {
-        const s = (i + 0.5) / count * path.length;
-        const p = pointAt(path, s);
-        const marker = L.marker(p.latLng, {
-          pane: "cars", icon: carIcon(CAR_COLORS[colorIndex++ % CAR_COLORS.length]), interactive: false, keyboard: false
-        }).addTo(carLayer);
-        cars.push({ marker, path, s, speed, rot: null });
-      }
+      for (let i = 0; i < count; i++) addCar(path, (i + 0.5) / count * path.length, speed);
     }
   }
 
@@ -243,7 +347,7 @@ const StreetMap = (() => {
   }
 
   return {
-    init, render, rebuildCars,
+    init, render, rebuildCars, setPicking,
     isReady: () => ready,
     missing: () => missingGeometry,
     refreshSize: () => { if (map) map.invalidateSize(); }

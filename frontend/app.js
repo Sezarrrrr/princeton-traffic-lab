@@ -2,6 +2,8 @@
 // Draws whatever network GET /api/network returns (no street names or IDs are hard-coded,
 // except the optional demo preset), lets the user combine changes (road closures, extra lanes,
 // signals, bus shift), and shows the POST /api/simulate results.
+// With the in-browser simulator (default, see sim/engine.js) it also supports custom trips,
+// intersection controls, and road speed/direction/access; those panels live in lab-ui.js.
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const VIEW = { width: 820, height: 620, padding: 70 };
@@ -23,17 +25,24 @@ const state = {
   lanes: {},                // road id -> extra lanes (1..MAX_EXTRA_LANES)
   signals: new Map(),       // intersection id -> mainGreenShare (0..1)
   busEnabled: false,
-  busPercent: DEFAULT_BUS_PERCENT
+  busPercent: DEFAULT_BUS_PERCENT,
+  // In-browser simulator only:
+  roadSettings: {},         // road id -> { speedMph?, oneway?, carAccess? }
+  controls: {},             // intersection id -> control override { type, cycle, greenShare, lost, ped, major }
+  settings: {},             // assumption overrides (apply to both columns; kept on Reset)
+  trips: []                 // custom trips (demand; kept on Reset)
 };
 
-// The full scenario we send to the backend (shared API contract).
+// The full scenario we send to the backend (shared API contract), plus the extra fields the
+// in-browser simulator understands.
 function currentScenario() {
-  return {
+  const scenario = {
     closedRoadIds: [...state.closed],
     extraLanesByRoadId: { ...state.lanes },
     signals: [...state.signals].map(([intersectionId, mainGreenShare]) => ({ intersectionId, mainGreenShare })),
     busShiftPercent: state.busEnabled && network.busRoute ? state.busPercent : 0
   };
+  return isLab() ? { ...scenario, ...labScenarioFields() } : scenario;
 }
 
 function snapshot() {
@@ -42,7 +51,11 @@ function snapshot() {
     lanes: { ...state.lanes },
     signals: new Map(state.signals),
     busEnabled: state.busEnabled,
-    busPercent: state.busPercent
+    busPercent: state.busPercent,
+    roadSettings: structuredClone(state.roadSettings),
+    controls: structuredClone(state.controls),
+    settings: { ...state.settings },
+    trips: [...state.trips]
   };
 }
 
@@ -72,7 +85,8 @@ const roadById = id => network.roads.find(r => r.id === id);
 const nodeById = id => network.intersections.find(i => i.id === id);
 const roadName = id => (roadById(id) || { name: id }).name;
 const nodeName = id => (nodeById(id) || { name: id }).name;
-const canSignal = id => (network.signalIntersections || []).includes(id);
+// Backend mode: only listed intersections can get a signal. Lab mode: every intersection has a control.
+const canSignal = id => !isLab() && (network.signalIntersections || []).includes(id);
 
 function roadResult(which, id) {
   if (!result) return null;
@@ -81,6 +95,7 @@ function roadResult(which, id) {
 
 // Color by congestion ratio (car trips / capacity), as calculated by the backend.
 function roadColorKey(road) {
+  if (road && road.noCarAccess) return "nocar";
   if (!road || road.closed) return "closed";
   if (road.carTrips === 0) return "empty";
   if (road.congestionRatio < 0.8) return "free";
@@ -148,7 +163,10 @@ function drawMap() {
         d: `M${mx - 9},${my - 9} L${mx + 9},${my + 9} M${mx + 9},${my - 9} L${mx - 9},${my + 9}`
       })
     );
-    makeClickable(g, road.name, () => select("road", road.id));
+    makeClickable(g, road.name, () => {
+      if (picking) setStatus("In the schematic, click an intersection to place the point (or use the street map).");
+      else select("road", road.id);
+    });
     roadLayer.append(g);
 
     const label = svgEl("text", { class: "trip-badge", "data-road-id": road.id, x: mx, y: my - 16, "text-anchor": "middle" });
@@ -185,14 +203,24 @@ function drawMap() {
       svgEl("circle", { cx: 7, cy: 15, r: 3.5, class: "lamp amber" }),
       svgEl("circle", { cx: 7, cy: 23, r: 3.5, class: "lamp green" })
     );
-    g.append(title, svgEl("circle", { class: "ring", cx: p.x, cy: p.y, r: 12 }), svgEl("circle", { class: "dot", cx: p.x, cy: p.y, r: 7 }), label, signalIcon);
-    makeClickable(g, inter.name, () => select("node", inter.id));
+    // Stop sign (lab mode): a small red octagon.
+    const oct = [...Array(8)].map((_, k) => {
+      const a = Math.PI / 8 + k * Math.PI / 4;
+      return `${(p.x + 18 + 8 * Math.cos(a)).toFixed(1)},${(p.y - 16 + 8 * Math.sin(a)).toFixed(1)}`;
+    }).join(" ");
+    const stopIcon = svgEl("polygon", { class: "stop-icon", points: oct });
+    g.append(title, svgEl("circle", { class: "ring", cx: p.x, cy: p.y, r: 12 }), svgEl("circle", { class: "dot", cx: p.x, cy: p.y, r: 7 }), label, signalIcon, stopIcon);
+    makeClickable(g, inter.name, () => (picking ? handlePick(null, inter.id) : select("node", inter.id)));
     nodeLayer.append(g);
   }
+  // Many intersections: show names only on hover / selection so the diagram stays readable.
+  svg.classList.toggle("dense", network.intersections.length > 12);
 }
 
 // ---- Updating the map from the latest results ----
 function renderMap() {
+  const ctx = mapContext();
+  const onRoute = new Set(ctx.route ? ctx.route.after.map(s => s.roadId) : []);
   for (const g of document.querySelectorAll(".road")) {
     const id = g.dataset.roadId;
     const after = roadResult("scenario", id);
@@ -200,6 +228,8 @@ function renderMap() {
     const lanes = state.lanes[id] || 0;
     const width = 9 + lanes * 5;
     g.classList.toggle("closed", isClosed);
+    g.classList.toggle("nocar", !!(after && after.noCarAccess));
+    g.classList.toggle("on-route", onRoute.has(id));
     g.classList.toggle("selected", selected && selected.type === "road" && selected.id === id);
     const line = g.querySelector(".line");
     line.setAttribute("stroke", roadColor(after));
@@ -223,7 +253,10 @@ function renderMap() {
   for (const g of document.querySelectorAll(".node")) {
     const id = g.dataset.nodeId;
     g.classList.toggle("selected", selected && selected.type === "node" && selected.id === id);
-    g.classList.toggle("has-signal", state.signals.has(id));
+    const type = ctx.controlOf(id).type;
+    g.classList.toggle("has-signal", type === "signal");
+    g.classList.toggle("has-stop", type === "stop_all" || type === "stop_minor");
+    g.classList.toggle("has-roundabout", type === "roundabout");
   }
 
   $("bus-layer").classList.toggle("active", state.busEnabled);
@@ -239,6 +272,8 @@ function renderSelected() {
     return;
   }
   if (selected.type === "road") renderSelectedRoad(box, selected.id);
+  else if (selected.type === "trip") renderSelectedTrip(box, selected.id);
+  else if (isLab()) renderLabNode(box, selected.id);
   else renderSelectedNode(box, selected.id);
 }
 
@@ -285,6 +320,7 @@ function renderSelectedRoad(box, id) {
   laneRow.append(el("span", {}, "Extra lanes"), minus, el("strong", { class: "count" }, String(lanes)), plus);
   box.append(laneRow);
   if (isClosed) box.append(el("p", { class: "small muted" }, "Reopen the road to add lanes."));
+  if (isLab()) renderLabRoadControls(box, id);
 }
 
 function renderSelectedNode(box, id) {
@@ -367,7 +403,8 @@ function renderChanges() {
   for (const id of state.closed) items.push([`Closed ${roadName(id)}`, () => state.closed.delete(id)]);
   for (const [id, n] of Object.entries(state.lanes)) items.push([`+${n} lane${n > 1 ? "s" : ""} on ${roadName(id)}`, () => delete state.lanes[id]]);
   for (const [id, share] of state.signals) items.push([`Signal at ${nodeName(id)} (main road green ${percent(share)})`, () => state.signals.delete(id)]);
-  if (state.busEnabled && network.busRoute) items.push([`Bus: ${state.busPercent}% of car trips switch`, () => { state.busEnabled = false; }]);
+  if (state.busEnabled && network.busRoute) items.push([`Bus: ${state.busPercent}% of ${isLab() ? "let-out" : "car"} trips switch`, () => { state.busEnabled = false; }]);
+  if (isLab()) items.push(...labChangeItems());
 
   if (!items.length) {
     list.append(el("li", { class: "muted" }, "No changes. This is the original scenario."));
@@ -391,6 +428,7 @@ function renderComparison() {
 
   // [label, before, after, how to format, is "up" bad?]
   const rows = [["Avg. car trip", b.avgCarTravelMinutes, s.avgCarTravelMinutes, formatMinutes, true]];
+  if ("avgIntersectionWaitMinutes" in s) rows.push(["Waiting at junctions", b.avgIntersectionWaitMinutes, s.avgIntersectionWaitMinutes, v => (v === null ? "–" : `${v.toFixed(1)} min`), true]);
   if ("completedCarTrips" in s) rows.push(["Completed car trips", b.completedCarTrips, s.completedCarTrips, String, false]);
   rows.push(["Unserved car trips", b.unservedCarTrips, s.unservedCarTrips, String, true]);
   rows.push(["Shifted to bus", b.carTripsShiftedToBus, s.carTripsShiftedToBus, String, null]);
@@ -466,12 +504,14 @@ const isDragging = box => box.contains(document.activeElement) && document.activ
 
 function render() {
   renderMap();
-  StreetMap.render({ state, selected, roadResult, colorKey: roadColorKey });
+  StreetMap.render(mapContext());
   renderSelected();
+  renderTrips();
   renderBus();
   renderChanges();
   renderComparison();
   renderShifts();
+  renderSettings();
 }
 
 // ---- Animated cars (decoration: count follows car trips, speed follows travel time) ----
@@ -515,8 +555,13 @@ function select(type, id) {
   render();
 }
 
+// Reset clears the changes to roads, intersections and the bus. Trips and assumptions are the
+// demand, not changes, so they stay (each has its own remove / restore button).
 function emptyState() {
-  return { closed: new Set(), lanes: {}, signals: new Map(), busEnabled: false, busPercent: DEFAULT_BUS_PERCENT };
+  return {
+    closed: new Set(), lanes: {}, signals: new Map(), busEnabled: false, busPercent: DEFAULT_BUS_PERCENT,
+    roadSettings: {}, controls: {}, settings: { ...state.settings }, trips: [...state.trips]
+  };
 }
 
 // Apply a change to the state, then re-run the simulation.
@@ -560,7 +605,7 @@ async function runSimulation(previousState) {
 let networkProblems = [];
 
 function statusText() {
-  const source = CONFIG.useMock ? "mock data" : `backend at ${CONFIG.apiBase}`;
+  const source = CONFIG.useLocal ? "the in-browser simulator (expanded network)" : `backend at ${CONFIG.apiBase}`;
   const problems = networkProblems.length ? ` Problems: ${networkProblems.join("; ")}` : "";
   return `Using ${source}. ${network.intersections.length} intersections, ${network.roads.length} roads.${problems}`;
 }
@@ -584,6 +629,7 @@ async function start() {
     setStatus(`Could not load the road network: ${err.message}`, true);
     return;
   }
+  document.body.classList.toggle("lab", isLab());
   const ids = new Set(network.intersections.map(i => i.id));
   networkProblems = [];
   for (const road of network.roads) {
@@ -617,7 +663,11 @@ function showMapNote(text) {
 }
 
 function setupViews() {
-  const handlers = { onSelectRoad: id => select("road", id), onSelectNode: id => select("node", id) };
+  const handlers = {
+    onSelectRoad: (id, latLng) => (picking ? handlePick([latLng.lat, latLng.lng]) : select("road", id)),
+    onSelectNode: id => (picking ? handlePick(null, id) : select("node", id)),
+    onMapClick: latLng => { if (picking) handlePick([latLng.lat, latLng.lng]); }
+  };
   const onTilesFailed = reason => {
     showMapNote(`${reason} Showing the schematic view. Try "Street map" again when you're back online.`);
     showView("schematic");
