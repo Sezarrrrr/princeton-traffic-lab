@@ -32,7 +32,7 @@ class SimulationRequest(BaseModel):
     busShiftPercent: int = 0
 
 
-def simulate_closures(closed_roads):
+def simulate_closures(closed_roads, extra_lanes):
     north_route = ("road-1", "road-2")
     south_route = ("road-3", "road-4")
     north_open = closed_roads.isdisjoint(north_route)
@@ -51,7 +51,8 @@ def simulate_closures(closed_roads):
         road_id = road["id"]
         closed = road_id in closed_roads
         trips = north_trips if road_id in north_route else south_trips
-        ratio = None if closed else trips / 100
+        capacity = 100 * (1 + extra_lanes.get(road_id, 0))
+        ratio = None if closed else trips / capacity
         minutes = None if closed else 2 * (1 + 0.15 * ratio**4)
 
         if minutes is not None:
@@ -86,13 +87,21 @@ def simulate(request: SimulationRequest):
     if closed_roads - known_roads:
         raise HTTPException(status_code=422, detail="Unknown road ID")
 
-    if request.extraLanesByRoadId or request.signals or request.busShiftPercent:
+    extra_lanes = request.extraLanesByRoadId
+    if set(extra_lanes) - known_roads:
+        raise HTTPException(status_code=422, detail="Unknown road ID for extra lanes")
+
+    if any(lanes < 0 for lanes in extra_lanes.values()):
+        raise HTTPException(status_code=422, detail="Extra lanes must be zero or more")
+
+    if request.signals or request.busShiftPercent:
         raise HTTPException(
             status_code=422,
-            detail="This prototype currently supports road closures only.",
+            detail="Signals and bus service are not supported yet.",
         )
 
     return {
-        "baseline": simulate_closures(set()),
-        "scenario": simulate_closures(closed_roads),
+        "baseline": simulate_closures(set(), {}),
+        "scenario": simulate_closures(closed_roads, extra_lanes),
+    }
     }
