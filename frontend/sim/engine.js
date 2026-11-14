@@ -17,7 +17,11 @@
 //       roundabout  entry capacity 1380 * e^(-0.00102 * circulating cars/h)
 //       none        no wait
 //   - Drivers pick routes that are fastest for them given everyone else's choices (user
-//     equilibrium, method of successive averages, 60 rounds). Turning movements aren't modelled.
+//     equilibrium, method of successive averages, 30 rounds). Turning movements aren't modelled.
+//   - Background traffic enters and leaves where main streets cross the edge of the map
+//     ("gateways", weighted 3 primary / 2 secondary / 1 tertiary): BG_THROUGH x weight x weight cars
+//     between every pair of gateways more than 1.5 km apart, plus BG_DOWNTOWN x weight cars to and
+//     from downtown (Nassau & Washington and Nassau & University Pl).
 //   - Bus: busShiftPercent of the let-out trips ride the bus if every bus road is open to cars.
 const LocalSim = (() => {
   const PERIOD_MIN = 15;
@@ -25,35 +29,41 @@ const LocalSim = (() => {
   const PER_HOUR = 60 / PERIOD_MIN;
   const SAT_FLOW = 1800;            // cars per hour of green per lane
   const TC = 6.5, TF = 3.3;         // two-way stop gap acceptance, seconds
-  const ITERATIONS = 60;
+  const ITERATIONS = 30;
   const MPS_PER_MPH = 0.44704;
 
   const SETTINGS_DEFAULTS = { eventCars: 200, backgroundScale: 1, laneCapacity: 100, stopHeadway: 4 };
   const SIGNAL_DEFAULTS = { cycle: 90, greenShare: 0.6, lost: 4, ped: 0 };
   // The let-out: same origin and destination as the backend's trips (Nassau & Washington to the station).
   const EVENT = { id: "event", name: "HackPrinceton let-out", from: "int_nassau_wash", to: "int_alex_univ" };
-  // Background traffic in the same 15 minutes, cars per route (ASSUMPTION, not counted).
-  const BACKGROUND = [
-    ["int_nassau_harrison", "int_nassau_univ", 45], ["int_nassau_univ", "int_nassau_harrison", 45],
-    ["int_alex_faculty", "int_nassau_univ", 30], ["int_nassau_univ", "int_alex_faculty", 25],
-    ["int_wash_faculty", "int_nassau_wash", 30], ["int_nassau_wash", "int_wash_faculty", 20],
-    ["int_mercer_alex", "int_nassau_wash", 20], ["int_paul_robeson_wiggins", "int_wash_faculty", 15],
-    ["int_harrison_prospect", "int_nassau_univ", 15]
-  ];
+  const BG_THROUGH = 1.2, BG_DOWNTOWN = 4, BG_MIN_METERS = 1500;
+  const DOWNTOWN = ["int_nassau_wash", "int_nassau_univ"];
   const BUS_NAME = "TigerTransit Station Connector";
   const BUS_CORE_ROADS = ["wash_north", "wash_mid", "wash_south", "faculty_rd", "alex_station"];
 
   const data = LOCAL_NETWORK_DATA;
   const roadMap = new Map(data.roads.map(r => [r.id, r]));
   const nodeMap = new Map(data.intersections.map(n => [n.id, n]));
-  const degree = id => data.roads.filter(r => r.from === id || r.to === id).length;
+  const degreeOf = new Map();
+  for (const r of data.roads) for (const id of [r.from, r.to]) degreeOf.set(id, (degreeOf.get(id) || 0) + 1);
+  const degree = id => degreeOf.get(id) || 0;
   const round2 = v => Math.round(v * 100) / 100;
 
-  // Bus route: the core Route A roads, now split into smaller pieces.
-  const busRoadIds = data.roads
-    .filter(r => BUS_CORE_ROADS.includes(r.core || r.id))
-    .sort((a, b) => BUS_CORE_ROADS.indexOf(a.core || a.id) - BUS_CORE_ROADS.indexOf(b.core || b.id) || a.id.localeCompare(b.id))
-    .map(r => r.id);
+  // Bus route: the core Route A roads (now split into smaller pieces), in driving order from
+  // Nassau & Washington.
+  const busRoadIds = (() => {
+    const left = data.roads.filter(r => BUS_CORE_ROADS.includes(r.core || r.id));
+    const order = [];
+    let at = "int_nassau_wash";
+    while (left.length) {
+      const i = left.findIndex(r => r.from === at || r.to === at);
+      if (i < 0) { order.push(...left.map(r => r.id)); break; }
+      const [r] = left.splice(i, 1);
+      order.push(r.id);
+      at = r.from === at ? r.to : r.from;
+    }
+    return order;
+  })();
 
   function haversine(a, b) {
     const rad = Math.PI / 180, dLat = (b[0] - a[0]) * rad, dLon = (b[1] - a[1]) * rad;
@@ -71,6 +81,24 @@ const LocalSim = (() => {
     }
     return { nodeId: best, meters: Math.round(bestD) };
   }
+
+  // Background traffic routes [from, to, cars] (ASSUMPTION, see the header).
+  const BACKGROUND = (() => {
+    const gws = (data.gateways || []).filter(g => nodeMap.has(g.id));
+    const ll = id => ROAD_GEOMETRY.intersections[id];
+    const out = [];
+    for (const g of gws) {
+      for (const h of gws) {
+        if (g.id === h.id || haversine(ll(g.id), ll(h.id)) < BG_MIN_METERS) continue;
+        out.push([g.id, h.id, BG_THROUGH * g.weight * h.weight]);
+      }
+      for (const d of DOWNTOWN) {
+        out.push([g.id, d, BG_DOWNTOWN * g.weight / DOWNTOWN.length]);
+        out.push([d, g.id, BG_DOWNTOWN * g.weight / DOWNTOWN.length]);
+      }
+    }
+    return out;
+  })();
 
   function defaultMajor(id) {
     const n = nodeMap.get(id);
@@ -95,13 +123,14 @@ const LocalSim = (() => {
       id: `place_${key}`, name: p.name, latLng: p.latLng, builtIn: true, ...nearestNode(p.latLng)
     })).sort((a, b) => a.name.localeCompare(b.name));
     return {
-      intersections: data.intersections.map(n => ({ id: n.id, name: n.name, x: n.x, y: n.y, streets: n.streets, control: { ...n.control }, degree: degree(n.id) })),
+      intersections: data.intersections.map(n => ({ id: n.id, name: n.name, x: n.x, y: n.y, streets: n.streets, control: { ...n.control }, controlSource: n.controlSource, degree: degree(n.id) })),
       roads: data.roads.map(r => ({ ...r, twoWay: r.oneway === 0 })),
       signalIntersections: data.intersections.filter(n => degree(n.id) >= 2).map(n => n.id),
       busRoute: { name: BUS_NAME, roadIds: busRoadIds },
       places,
+      gateways: (data.gateways || []).map(g => g.id),
       eventTrip: { ...EVENT },
-      background: { routes: BACKGROUND.length, cars: BACKGROUND.reduce((s, b) => s + b[2], 0) },
+      background: { routes: BACKGROUND.length, cars: BACKGROUND.reduce((s, b) => s + Math.round(b[2]), 0) },
       settingsDefaults: { ...SETTINGS_DEFAULTS },
       signalDefaults: { ...SIGNAL_DEFAULTS },
       periodMinutes: PERIOD_MIN,
@@ -185,22 +214,49 @@ const LocalSim = (() => {
     return { run, delay, sat, cost };
   }
 
-  function shortestPath(outLinks, links, cost, from, to) {
-    const best = new Map([[from, 0]]), prev = new Map(), done = new Set();
-    const queue = [[0, from]];
-    while (queue.length) {
-      let k = 0;
-      for (let j = 1; j < queue.length; j++) if (queue[j][0] < queue[k][0]) k = j;
-      const [d, n] = queue.splice(k, 1)[0];
-      if (done.has(n)) continue;
-      done.add(n);
-      if (n === to) break;
+  // Shortest-path tree from one origin (Dijkstra with a binary heap). Returns the incoming link of
+  // every reached node.
+  function shortestTree(outLinks, links, cost, from) {
+    const best = new Map([[from, 0]]), prev = new Map();
+    const heap = [[0, from]];
+    const push = item => {
+      heap.push(item);
+      let i = heap.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heap[p][0] <= heap[i][0]) break;
+        [heap[p], heap[i]] = [heap[i], heap[p]]; i = p;
+      }
+    };
+    const pop = () => {
+      const top = heap[0], last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        let i = 0;
+        for (;;) {
+          const l = 2 * i + 1, r = l + 1;
+          let m = i;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === i) break;
+          [heap[m], heap[i]] = [heap[i], heap[m]]; i = m;
+        }
+      }
+      return top;
+    };
+    while (heap.length) {
+      const [d, n] = pop();
+      if (d > best.get(n)) continue;
       for (const i of outLinks.get(n) || []) {
         const m = links[i].to, nd = d + cost[i];
-        if (nd < (best.has(m) ? best.get(m) : Infinity)) { best.set(m, nd); prev.set(m, i); queue.push([nd, m]); }
+        if (nd < (best.has(m) ? best.get(m) : Infinity)) { best.set(m, nd); prev.set(m, i); push([nd, m]); }
       }
     }
-    if (!best.has(to) || from === to) return null;
+    return prev;
+  }
+
+  function pathFromTree(prev, links, from, to) {
+    if (from === to || !prev.has(to)) return null;
     const path = [];
     for (let n = to; n !== from; n = links[prev.get(n)].from) path.push(prev.get(n));
     return path.reverse();
@@ -215,18 +271,24 @@ const LocalSim = (() => {
     let flow = new Float64Array(n);
     const pathW = trips.map(() => new Map());
     const routable = trips.map(t => t.cars > 0);
+    const byOrigin = new Map();
+    trips.forEach((t, ti) => { if (!byOrigin.has(t.from)) byOrigin.set(t.from, []); byOrigin.get(t.from).push(ti); });
     for (let k = 1; k <= ITERATIONS; k++) {
       const { cost } = linkCosts(links, flow, controls, cfg.settings);
-      trips.forEach((t, ti) => {
-        if (!routable[ti]) return;
-        const p = shortestPath(outLinks, links, cost, t.from, t.to);
-        if (!p) { routable[ti] = false; return; }
-        for (const e of pathW[ti].values()) e.w *= 1 - 1 / k;
-        const key = p.join(",");
-        const e = pathW[ti].get(key) || { links: p, w: 0 };
-        e.w += 1 / k;
-        pathW[ti].set(key, e);
-      });
+      for (const [origin, tis] of byOrigin) {
+        if (!tis.some(ti => routable[ti])) continue;
+        const tree = shortestTree(outLinks, links, cost, origin);
+        for (const ti of tis) {
+          if (!routable[ti]) continue;
+          const p = pathFromTree(tree, links, origin, trips[ti].to);
+          if (!p) { routable[ti] = false; continue; }
+          for (const e of pathW[ti].values()) e.w *= 1 - 1 / k;
+          const key = p.join(",");
+          const e = pathW[ti].get(key) || { links: p, w: 0 };
+          e.w += 1 / k;
+          pathW[ti].set(key, e);
+        }
+      }
       flow = new Float64Array(n);
       trips.forEach((t, ti) => { for (const e of pathW[ti].values()) for (const i of e.links) flow[i] += e.w * t.cars; });
     }
@@ -275,8 +337,10 @@ const LocalSim = (() => {
     });
 
     // Intersections
+    const into = new Map();
+    links.forEach((l, i) => { if (!into.has(l.to)) into.set(l.to, []); into.get(l.to).push({ l, i }); });
     const intersections = data.intersections.map(node => {
-      const approaches = links.map((l, i) => ({ l, i })).filter(({ l }) => l.to === node.id)
+      const approaches = (into.get(node.id) || [])
         .map(({ l, i }) => ({ roadId: l.road.id, street: l.road.street, cars: Math.round(flow[i]), waitSeconds: Math.round(delay[i]), saturation: round2(sat[i]) }));
       const cars = approaches.reduce((s, a) => s + a.cars, 0);
       const avg = cars ? approaches.reduce((s, a) => s + a.cars * a.waitSeconds, 0) / cars : 0;

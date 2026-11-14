@@ -163,6 +163,9 @@ function renderLabNode(box, id) {
   box.append(el("h2", {}, node.name));
   const meta = el("p", { class: "selected-meta muted" }, "ID ");
   meta.append(el("code", {}, id), ` · ${node.degree} road${node.degree === 1 ? "" : "s"} meet here`);
+  meta.append(el("br"), node.controlSource === "assumed"
+    ? `Original control (${CONTROL_NAMES[def.type].toLowerCase()}) is assumed: nothing is mapped here in OpenStreetMap.`
+    : `Original control (${CONTROL_NAMES[def.type].toLowerCase()}) comes from OpenStreetMap; signal timing is assumed.`);
   box.append(meta);
 
   const streets = [...new Set(network.roads.filter(r => r.from === id || r.to === id).map(r => r.street))];
@@ -204,7 +207,7 @@ function renderLabNode(box, id) {
     box.append(selectBox(`major-${id}`, "Main street (doesn't stop)", streets.map(s => [s, s]), ctl.major,
       v => change(() => setControl(id, { major: v }))));
   } else if (ctl.type === "stop_all") {
-    box.append(el("p", { class: "small muted" }, `Every car stops. One car crosses every ${settingsNow().stopHeadway} s (change it under Assumptions).`));
+    box.append(el("p", { class: "small muted" }, `Every car stops. One car crosses every ${settingsNow().stopHeadway} s (change it in Settings).`));
   } else if (ctl.type === "roundabout") {
     box.append(el("p", { class: "small muted" }, "Cars yield to traffic already in the circle; nobody stops when it's clear."));
   }
@@ -255,6 +258,7 @@ function resolvePoint(value) {
 function startPick(which) {
   picking = picking === which ? null : which;
   StreetMap.setPicking(!!picking);
+  Map3D.setPicking(!!picking);
   document.body.classList.toggle("picking", !!picking);
   setStatus(picking ? `Click anywhere on the map to set the trip ${picking === "from" ? "start" : "end"} point (Esc to cancel).` : statusText());
   renderTrips();
@@ -265,6 +269,7 @@ function handlePick(latLng, nodeId) {
   const which = picking;
   picking = null;
   StreetMap.setPicking(false);
+  Map3D.setPicking(false);
   document.body.classList.remove("picking");
   const snap = nodeId ? { nodeId, meters: 0 } : LocalSim.nearestNode(latLng);
   const ll = latLng || ROAD_GEOMETRY.intersections[nodeId];
@@ -289,7 +294,15 @@ function renderTrips() {
     return;
   }
 
-  // Existing trips
+  // The selected trip's details, then the list of trips
+  if (selected && selected.type === "trip") {
+    const detail = el("div", { class: "trip-detail" });
+    renderSelectedTrip(detail, selected.id);
+    const close = el("button", { type: "button", class: "link close-detail", "aria-label": "Close trip details" }, "Close");
+    close.addEventListener("click", () => { selected = null; render(); });
+    detail.prepend(close);
+    box.append(detail);
+  }
   const list = el("ul", { class: "trip-list" });
   const ev = network.eventTrip;
   const rows = [{ id: ev.id, name: ev.name, cars: settingsNow().eventCars, builtIn: true, from: nodeName(ev.from), to: nodeName(ev.to) },
@@ -317,7 +330,7 @@ function renderTrips() {
     list.append(li);
   }
   box.append(list);
-  box.append(el("p", { class: "small muted" }, `Times are door-to-door for the trip, original → modified. Also simulated: ${network.background.cars} background cars on ${network.background.routes} routes (see Assumptions).`));
+  box.append(el("p", { class: "small muted" }, `Times are door-to-door for the trip, original → modified. Also simulated: ${network.background.cars} background cars on ${network.background.routes} routes (see Settings).`));
 
   // New trip form
   const form = el("div", { class: "trip-form" });
@@ -417,6 +430,7 @@ function addTrip(errBox) {
   };
   tripDraft.name = "";
   selected = { type: "trip", id };
+  showTab("trips");
   change(() => { state.trips = [...state.trips, trip]; });
 }
 
@@ -437,9 +451,9 @@ function tripInfo(id) {
 
 function renderSelectedTrip(box, id) {
   const t = tripInfo(id);
-  if (!t) { selected = null; box.append(el("h2", {}, "Selected"), el("p", { class: "muted" }, "Click a road or intersection on the map.")); return; }
-  box.append(el("h2", {}, t.name));
-  box.append(el("p", { class: "selected-meta muted" }, `${t.fromLabel} → ${t.toLabel} · ${t.cars} cars${t.builtIn ? " (size set under Assumptions)" : ""}`));
+  if (!t) { selected = null; return; }
+  box.append(el("h3", { class: "trip-detail-title" }, t.name));
+  box.append(el("p", { class: "selected-meta muted" }, `${t.fromLabel} → ${t.toLabel} · ${t.cars} cars${t.builtIn ? " (size set in Settings)" : ""}`));
   const b = tripResult("baseline", id), a = tripResult("scenario", id);
   const table = el("table", { class: "compare" });
   table.innerHTML = "<thead><tr><th></th><th>Original</th><th>Modified</th></tr></thead>";

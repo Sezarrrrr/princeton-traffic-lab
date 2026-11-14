@@ -1,16 +1,18 @@
 # Princeton Traffic Lab: Frontend
 
-Plain HTML, CSS, and vanilla JavaScript, plus **Leaflet** for the street map. No build step.
+Plain HTML, CSS, and vanilla JavaScript, plus **Leaflet** for the 2D street map and **MapLibre GL JS** for the 3D view. No build step.
 
 ## Credits
 
 | What | Used for | License |
 |---|---|---|
-| [Leaflet](https://leafletjs.com) 1.9.4, loaded from unpkg | Interactive street map: panning, zooming, drawing road overlays and markers | BSD-2-Clause |
-| [OpenStreetMap](https://www.openstreetmap.org/copyright) tiles (`tile.openstreetmap.org`) | Basemap under the roads. Attribution "© OpenStreetMap contributors" is always shown on the map | Tiles: OSMF tile usage policy |
-| OpenStreetMap data via the [Overpass API](https://overpass-api.de) | Real street shapes for each simulation road, intersection points, and the Julis Romo Rabinowitz Building location (`geo/princeton-geo.js`) | © OpenStreetMap contributors, ODbL |
+| [Leaflet](https://leafletjs.com) 1.9.4, loaded from unpkg | Interactive 2D street map: panning, zooming, drawing road overlays and markers | BSD-2-Clause |
+| [MapLibre GL JS](https://maplibre.org) 4.7.1, loaded from unpkg (only when the 3D view is opened) | 3D view: tilted map, 3D buildings, road layers, 3D car boxes | BSD-3-Clause |
+| [OpenFreeMap](https://openfreemap.org) "Liberty" style and vector tiles (`tiles.openfreemap.org`), built on [OpenMapTiles](https://openmaptiles.org) | Basemap and 3D buildings in the 3D view. Attribution "OpenFreeMap © OpenMapTiles Data from OpenStreetMap" is always shown on the map | Free public instance; OpenMapTiles schema; data ODbL |
+| [OpenStreetMap](https://www.openstreetmap.org/copyright) tiles (`tile.openstreetmap.org`) | Basemap under the roads in the 2D map. Attribution "© OpenStreetMap contributors" is always shown on the map | Tiles: OSMF tile usage policy |
+| OpenStreetMap data via the [Overpass API](https://overpass-api.de) | Street shapes and the road network, mapped traffic signals / stop signs / roundabouts, and place locations (`geo/princeton-geo.js`, `geo/princeton-network.js`) | © OpenStreetMap contributors, ODbL |
 
-Everything else in `frontend/` was written by our team during HackPrinceton Fall 2026: the map overlays, car animation, controls, and panels.
+Everything else in `frontend/` was written by our team during HackPrinceton Fall 2026: the simulator, map overlays, 3D layers, car animation, controls, and panels.
 
 ## Run it
 
@@ -22,23 +24,56 @@ py -m http.server 5500 --directory frontend
 
 Then open http://localhost:5500. You can also double-click `frontend/index.html`.
 
-- **In-browser simulator (default):** `sim/engine.js` runs the expanded network (`geo/princeton-network.js`, 27 intersections and 39 roads) with custom trips, intersection controls and road settings. It replaced the old `mock/` files and uses the same request and response format, plus extra fields.
-- **Backend mode:** open `http://localhost:5500/?api=real` to call the FastAPI server at `http://localhost:8000` (set in `api.js`). The backend must allow CORS for the page to reach it. The backend covers the 10-road core network with closures and extra lanes, so the trip, control and assumption panels say they need the in-browser simulator.
+- **In-browser simulator (default):** `sim/engine.js` runs the expanded network (`geo/princeton-network.js`, 308 intersections and 441 roads) with custom trips, intersection controls and road settings. It replaced the old `mock/` files and uses the same request and response format, plus extra fields.
+- **Backend mode:** open `http://localhost:5500/?api=real` to call the FastAPI server at `http://localhost:8000` (set in `api.js`). The backend must allow CORS for the page to reach it. The backend covers the 10-road core network with closures and extra lanes, so the Trips tab is hidden and the Settings tab says the assumptions are the backend's.
 
-- **Views:** the street map is the default. Add `?view=schematic` to start in the schematic view, or `?tiles=test-fail` to rehearse what happens when map tiles can't load.
+- **Views:** **Map** (2D street map, default), **3D**, and **Schematic**. Add `?view=schematic` or `?view=3d` to start in another view, or `?tiles=test-fail` to rehearse what happens when map tiles can't load.
+
+## Layout
+
+- **Top bar:** title and a one-line status (which simulator, how big the network is).
+- **Map card (most of the screen):**
+  - a Map / 3D / Schematic switch, the **Demo: Let-Out** button, and a **Cars** toggle
+  - a collapsible **Legend** floating over the map.
+- **Side panel:**
+  - **Original vs. modified** stays pinned at the top. Headline tiles show the modified value, the original, and the change in green or red. **All numbers** opens the full table and the trip-conservation check, and a "✓ all trips counted" badge shows that the check passes.
+  - Four tabs below it:
+    - **Edit:** the selected road or intersection, and Your changes with Reset. The tab shows a count of changes.
+    - **Trips:** custom trips and places. The tab shows a count of trips. Hidden in backend mode.
+    - **Details:** intersections with the longest waits, and where the trips went. Click a row to select it on the map.
+    - **Settings:** bus route and assumptions.
+- **Less clutter on the 2D map:**
+  - Bigger streets are drawn wider.
+  - Trip-count badges appear only on roads that changed, were edited or are selected, or when zoomed in close.
+  - Small stop signs and plain bends appear only when zoomed in.
+  - Zoomed far out, only signals, roundabouts and all-way stops keep a dot.
+  - The map opens on campus and downtown.
 
 ## Features
 
+### 3D view
+
+- Opens on the same spot as the 2D map. The camera is tilted (58°) and rotated, and you can drag to pan, right-drag or use the compass control to rotate and tilt, and scroll to zoom.
+- Shows 3D buildings from OpenFreeMap / OpenMapTiles, with the simulation roads drawn under them in the same colors as the 2D map. Closed roads are dashed. The selected road gets an orange halo, the selected trip a purple route, and the bus route a blue dotted line.
+- Signal, stop and roundabout icons show at the intersections, and the "You are here" marker sits at JRR.
+- **3D cars:** small extruded boxes drive on the right-hand side of each road, in each direction, at that direction's simulated speed. They follow the **Cars** toggle.
+- Everything is clickable as in 2D: selecting roads and intersections, and **Pick on map** for trips.
+- MapLibre is loaded only when 3D is first opened, with SRI hashes. If it can't load (offline, or no WebGL), the page says so and stays on the 2D map.
+
 ### In-browser simulator (`ben-test` branch)
 
-- **Expanded road network.** 27 intersections and 39 road segments around downtown and campus, built from OpenStreetMap by `geo/tools/build_network.py`. It adds Witherspoon St, Vandeventer Ave, Wiggins St, Moore St, Chambers St, Paul Robeson Pl, Hulfish St, Palmer Square East/West, William St, Charlton St, Olden St, Harrison St, Elm Dr, Nassau St east to Harrison St, and Prospect Ave east to Harrison St.
-  - Core road IDs are kept where a segment matches a core road (`wash_mid`, `wash_south`, `alex_north`, `alex_station`, `nassau_mercer`, `prospect_ave`, `univ_place`). Where new junctions split a core road, the pieces are `nassau_west_1..3`, `wash_north_1..2` and `faculty_rd_1..2`.
+- **Expanded road network: most of Princeton.** 308 intersections and 441 road segments (about 95 km of streets), built from OpenStreetMap by `geo/tools/build_network.py`.
+  - The area runs from the Princeton Shopping Center and Westminster in the north to Lake Carnegie and the Institute for Advanced Study in the south, and from Route 206 to Harrison St and Snowden Ln.
+  - It includes every primary, secondary and tertiary street in that box, plus all named side streets in the town core (downtown, campus, Witherspoon-Jackson, the Western Section).
+  - Streets are cut at the edge of the area. The 15 cut points are **gateways**, where background traffic enters and leaves.
+  - Core road IDs are kept where a segment matches a core road. New junctions split some core roads into pieces named `<core id>_1`, `_2`, … (for example `wash_mid_1`, `wash_mid_2`), so the demo preset closes every piece of `wash_mid`.
   - Lanes, one-way streets and speed limits come from OSM tags where present. Otherwise the defaults are 25 mph and 1 lane each way.
-- **Custom trips between two points.** In the **Trips** card:
-  - Choose a start (A) and an end (B) from 13 OSM places, your own places, or any intersection, or click **Pick on map** and then click anywhere on the street map.
+- **Original intersection controls from OpenStreetMap where mapped.** This gives 28 signals, 4 roundabouts and 41 stop-sign junctions. The other 151 junctions get an assumed two-way stop, and 84 bends or edge points have no control. The intersection panel says which one each is. All signal timings are assumed (90 s cycle, 60% main green).
+- **Custom trips between two points.** In the **Trips** tab:
+  - Choose a start (A) and an end (B) from 22 OSM places (Dinky station, Nassau Hall, Frist, the Shopping Center, IAS, Princeton High School, the Battlefield, the Stadium, and more), your own places, or any intersection. Or click **Pick on map**, then click anywhere on the 2D or 3D map.
   - Points snap to the nearest intersection, and a dashed line shows the snap.
   - Set the number of cars and an optional name. Tick "only in the modified scenario" to test new traffic.
-  - Each trip shows its original → modified time. Selecting a trip draws the modified route in solid purple and the original route dashed, and lists the roads it uses.
+  - Each trip shows its original → modified time. Selecting a trip opens its details at the top of the tab, draws the modified route in solid purple and the original route dashed, and lists the roads it uses.
   - Pins you drop appear under **Your places**, where you can rename or delete them.
 - **Intersection controls.** Click any intersection and choose **No control, Two-way stop, All-way stop, Traffic signal or Roundabout**. The map shows a signal, stop-sign or roundabout icon.
   - Signals have:
@@ -56,7 +91,7 @@ Then open http://localhost:5500. You can also double-click `frontend/index.html`
   - **allow cars** on University Place, which has no car access in the shared network.
   
   The panel also shows cars and travel time for each direction.
-- **Assumptions card.** Applies to both columns:
+- **Assumptions (Settings tab).** Applies to both columns:
   - let-out size (0–600 cars)
   - background traffic (0–200%)
   - lane capacity
@@ -72,7 +107,7 @@ Then open http://localhost:5500. You can also double-click `frontend/index.html`
   - **Road overlays follow the real streets.** Each road ID in `GET /api/network` is drawn using `geo/princeton-geo.js`, which holds `[lat, lon]` points keyed by the same road IDs. Connectors are drawn in full with their turns; for example, `nassau_mercer` goes west on Nassau St, then south on Mercer St. Click a road overlay or intersection to select it. Hovering shows the name.
   - **Top-down car icons** drive along the road curves and turn with the street. They move slower on congested roads (speed follows `travelMinutes`), disappear from closed roads, and get fewer or more with `carTrips`. They're only a visualization: every number comes from the simulation. Cars shrink when you zoom out.
   - The API's `x`/`y` values are schematic and are only used by the schematic view.
-- **Schematic view (demo fallback).** The original SVG diagram, drawn from the API's `x`/`y`. Use the "Street map / Schematic" switch above the map. If Leaflet or the map tiles can't load (for example, no Wi-Fi at the venue), the page switches to the schematic automatically and says why. All controls work the same in both views.
+- **Schematic view (demo fallback).** The original SVG diagram, drawn from the API's `x`/`y`. Use the "Map / 3D / Schematic" switch above the map. If Leaflet or the map tiles can't load (for example, no Wi-Fi at the venue), the page switches to the schematic automatically and says why. All controls work the same in both views.
 - **Map from data.** Every intersection and road comes from `GET /api/network`. Street names and IDs aren't hard-coded, so the network can be swapped. A road with no street geometry still appears in the schematic view, and the page says so.
 - **Roads.** Click a road to see its car trips, travel time, and volume/capacity, original vs. modified. You can then:
   - **Close road** / **Reopen road** (sent as `closedRoadIds`)
@@ -91,10 +126,11 @@ Then open http://localhost:5500. You can also double-click `frontend/index.html`
 
 | File | Purpose |
 |---|---|
-| `index.html` | Page layout, loads Leaflet |
+| `index.html` | Page layout (top bar, map card, results tiles, tabs), loads Leaflet |
 | `styles.css` | Styling, layout, road colors, map symbols, car and venue icons |
-| `app.js` | Controls, panels, schematic SVG view, view switching and fallback |
-| `street-map.js` | Leaflet street map: tiles, road overlays, venue marker, car icons |
+| `app.js` | Controls, panels, results tiles, tabs, schematic SVG view, view switching and fallback |
+| `street-map.js` | Leaflet street map: tiles, road overlays, venue marker, car icons, zoom-based decluttering |
+| `map3d.js` | 3D view: loads MapLibre on demand, OpenFreeMap 3D buildings, road and intersection layers, 3D cars |
 | `geo/princeton-geo.js` | Real `[lat, lon]` street geometry keyed by road and intersection IDs |
 | `geo/princeton-network.js` | Expanded network for the in-browser simulator: intersections, roads (lanes, one-way, speed, length), default controls |
 | `geo/tools/*.py` | Scripts that downloaded the OSM data and built the geo files: `fetch_osm.py`, `fetch_walks.py`, `build_geo.py` (core roads), `fetch_osm_expanded.py`, `build_network.py` (expanded network and places) |
@@ -127,24 +163,42 @@ Then open http://localhost:5500. You can also double-click `frontend/index.html`
   - Lengths are for drawing only; the simulation's travel times come from the backend.
 - **Venue location check:** in OSM, the Julis Romo Rabinowitz Building (40.34914, -74.65555) sits beside `wash_north`, between Nassau St and Prospect Ave. `testing/road-network.md` and the demo script say it's on `wash_mid`. Our map research teammate should confirm which segment to close for the "Let-Out" demo.
 - **In-browser simulator assumptions (not measurements):**
-  - **Demand:** one 15-minute let-out period. 200 let-out cars go from Nassau & Washington to Alexander & University Pl (station), the same as the backend. Another 245 background cars run on 9 routes through town (listed in `sim/engine.js`).
+  - **Demand:** one 15-minute let-out period. 200 let-out cars go from Nassau & Washington to Alexander & University Pl (station), the same as the backend.
+  - **Background traffic:** 466 cars on 232 routes. Each gateway has a weight: 3 primary, 2 secondary, 1 tertiary.
+    - Gateway to gateway: 1.2 × weight × weight cars between gateways more than 1.5 km apart.
+    - Gateway to and from downtown: 4 × weight cars, split between Nassau & Washington and Nassau & University Pl.
   - **Roads:** free-flow time = length / speed limit. Congestion uses BPR, `t0 × (1 + 0.15 × (cars / capacity)^4)`, with 100 cars per lane per 15 min for each direction.
   - **Junction waits** use textbook Highway Capacity Manual-style formulas, not local counts:
     - signals: Webster uniform delay plus HCM overflow delay, with a saturation flow of 1800 cars per hour of green per lane
     - all-way stops: one car every 4 s, plus 5 s for the stop
     - two-way stops: 6.5 s critical gap and 3.3 s follow-up time
     - roundabouts: entry capacity 1380·e^(−0.00102·circulating cars per hour)
-  - **Route choice:** drivers pick the fastest route given everyone else's choices (user equilibrium, method of successive averages, 60 rounds). Turns aren't modelled.
-  - **Default controls are guesses, not surveyed:**
-    - Nassau St junctions with bigger streets: signals (90 s cycle, 60% for Nassau)
-    - Alexander & University Pl: roundabout
-    - other junctions of two bigger streets: all-way stops
-    - the rest: two-way stops
-  
-  Our road research teammate should check the default controls against the real intersections.
-- **Places** (`ROAD_GEOMETRY.landmarks`) are OSM building or station centers: Princeton Station (Dinky), Nassau Hall, Firestone Library, the Chapel, Frist, the Art Museum, Palmer Square, Princeton Public Library, Jadwin Gym, Friend Center, Lewis Library, Princeton Theological Seminary, and JRR.
+  - **Route choice:** drivers pick the fastest route given everyone else's choices (user equilibrium, method of successive averages, 30 rounds, one shortest-path tree per origin). Turns aren't modelled. One full run (original + modified) takes about 0.35 s in the browser.
+  - **Original controls:**
+    - Signals, stop signs and roundabouts come from OSM `traffic_signals`, `stop` and `give_way` nodes and `junction=roundabout` ways within 40 m of a junction. A stop sign on only some streets makes a two-way stop; stop signs on every street make an all-way stop.
+    - Junctions with nothing mapped get an **assumed** two-way stop, where the smaller street stops.
+    - Signal timing (90 s cycle, 60% green for the bigger street) is assumed everywhere.
+    - OSM coverage isn't complete, so our road research teammate should spot-check the busy junctions.
+- **Places** (`ROAD_GEOMETRY.landmarks`) are OSM building, park or station centers. There are 22, including Princeton Station (Dinky), Nassau Hall, Firestone, the Chapel, Frist, the Art Museum, Palmer Square, the Public Library, Jadwin, Dillon, Princeton Stadium, Friend Center, Lewis Library, the Seminary, the Shopping Center, the Institute for Advanced Study, Princeton High School, the Battlefield, Marquand Park, Princeton Cemetery, Westminster Choir College, and JRR.
 
-## Tested: in-browser simulator (`ben-test`, 2026-11-14, in the browser)
+## Tested: bigger network, 3D view, new layout (`ben-test`, 2026-11-14, in the browser)
+
+| Check | Result |
+|---|---|
+| Load | 308 intersections and 441 roads; opens on campus and downtown; tiles show 7.8 min, 1.3 min junction wait, 666 of 666 completed; ✓ all trips counted; no console errors |
+| Zoom out to the whole area | Main roads across Princeton; only signals, roundabouts and all-way stops keep a dot; no badges on unchanged roads |
+| 3D (button) | MapLibre loads in about 0.1 s after first use; 58° tilt, 3D buildings, 441 road features, control icons, JRR marker; OpenFreeMap / OpenMapTiles / OSM attribution shown |
+| 3D cars | 319 car boxes, drawn on the right-hand side of Nassau St and Washington Rd |
+| Demo: Let-Out | Closes `wash_mid_1` and `wash_mid_2`; 7.8 → 8.5 min; Edit tab shows 2 changes |
+| Details tab | Longest waits listed (Nassau & University Pl, 20 → 21 s); clicking a row selects that intersection and opens Edit; the intersection panel says its control comes from OSM |
+| Trip: Shopping Center → Princeton Station, 40 cars | Trips tab shows a count of 1 and the details (8.7 → 9.2 min with the closure); purple route on the map |
+| Bus route | Listed in driving order from Nassau & Washington to the station |
+| Phone width (375 px) | No sideways scrolling; tiles wrap to two columns |
+| `?api=real` (backend from `main`) | Status "Backend at http://localhost:8000 · 9 intersections · 10 roads"; Trips tab hidden; close `wash_mid` → **20.4** min, + lane on `alex_north` → **15.9** min, Reset → **10.4** min, 200 of 200 completed, 0 unserved; 3D works with the 10 core roads |
+
+The browser pane was hidden during testing, which pauses animation, so the 3D cars were moved with `Map3D.stepCars()` from the console instead of the animation loop.
+
+## Tested: first expanded network (27 intersections, before the area was widened)
 
 | Check | Result |
 |---|---|
