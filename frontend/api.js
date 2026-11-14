@@ -1,7 +1,9 @@
-// Use the local backend by default. The mock network is available with ?api=mock.
+// Hosted deployments serve the UI and API together. Port 5501 is the local split-server setup.
 const CONFIG = {
   useMock: new URLSearchParams(location.search).get("api") === "mock",
-  apiBase: "http://127.0.0.1:8000"
+  apiBase: ["127.0.0.1", "localhost"].includes(location.hostname) && location.port === "5501"
+    ? "http://127.0.0.1:8000"
+    : location.origin
 };
 
 // fetch() only throws when the server can't be reached at all (not running, wrong port,
