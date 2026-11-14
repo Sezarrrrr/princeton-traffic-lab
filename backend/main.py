@@ -67,6 +67,8 @@ def simulate_closures(closed_roads):
 
     completed_trips = north_trips + south_trips
     return {
+                "totalCarTrips": 200,
+        "completedCarTrips": completed_trips,
         "avgCarTravelMinutes": (
             round(total_travel_minutes / completed_trips, 2)
             if completed_trips else None
