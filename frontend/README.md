@@ -65,4 +65,15 @@ Then open http://localhost:5500. You can also double-click `frontend/index.html`
 | Reset | Back to the original numbers, bus off, no changes listed |
 | `?api=real` with no backend running | Clear "can't reach the backend" message |
 
-Not yet tested against Sizar's real backend.
+## Tested against the real backend (2026-11-14)
+
+Backend: `backend` branch at `ae6a142` ("Connect Princeton network to simulation"), run locally with Uvicorn. CORS was added in a local test wrapper only, because the backend doesn't enable it yet.
+
+| Test plan case | Result |
+|---|---|
+| Load | 9 intersections and 10 roads drawn from `GET /api/network`, 200 trips, 10.4 min, conservation ✓ |
+| TC-01 close `wash_mid` (demo preset) | 10.4 → 20.4 min; Route B roads 80 → 200 trips; Route A roads 120 → 0 |
+| TC-02 also close `nassau_west` | "No completed trips.", 0 completed + 200 unserved = 200 ✓ |
+| TC-03 Reset | Back to 10.4 min, no changes |
+| TC-04 +1 lane on `wash_mid` | Road 2.6 → 2.0 min (volume/capacity 1.20 → 0.60), average 10.4 → 10.1 min |
+| Signals / bus | Backend sends no signal intersections and `busRoute: null`, so the UI shows no signal rings and "No bus route available yet." |
