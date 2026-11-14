@@ -10,12 +10,14 @@ from .princeton_network import (
 
 from .custom_bus import CustomBusRoute, plan_custom
 from .routing import find_route
-from .lane_stretches import LaneStretch
+from .lane_stretches import LaneStretch, SpeedStretch
+from .speed_limits import free_flow_minutes, speed_record
 from .street_picks import length
 
-TOTAL_TRIPS = 200
+DEFAULT_TRIPS = 100
+MAX_TRIPS = 1000
 CAPACITY_PER_LANE = 100
-FREE_FLOW_MINUTES = 2
+MODELED_BASE_LANES = 1
 SIGNAL_CYCLE_SECONDS = 90
 MAX_EXTRA_LANES = 3
 ROAD_LENGTHS = {id: length(road["geometry"]) for id, road in ROADS.items()}
@@ -45,9 +47,11 @@ class Signal(BaseModel):
 
 
 class SimulationRequest(BaseModel):
+    tripDemand: int = Field(default=DEFAULT_TRIPS, ge=1, le=MAX_TRIPS, strict=True)
     closedRoadIds: list[str] = Field(default_factory=list)
     extraLanesByRoadId: dict[str, Annotated[int, Field(ge=0)]] = Field(default_factory=dict)
     laneStretches: list[LaneStretch] = Field(default_factory=list, max_length=24)
+    speedStretches: list[SpeedStretch] = Field(default_factory=list, max_length=24)
     signals: list[Signal] = Field(default_factory=list)
     enabledBusRouteIds: list[str] = Field(default_factory=list)
     busShiftPercent: int = Field(default=0, ge=0, le=50)
@@ -73,7 +77,7 @@ def car_assignments(origin, destination, closed, demand):
 def bus_service(request, origin, destination, closed):
     services = []
     shifted = 0
-    demand = (TOTAL_TRIPS * request.busShiftPercent + 50) // 100
+    demand = (request.tripDemand * request.busShiftPercent + 50) // 100
     for route in request.customBusRoutes:
         enabled = route.id in request.enabledBusRouteIds
         if not enabled:
@@ -191,20 +195,31 @@ def signal_results(signals, arrivals):
                 })
         results.append({
             "intersectionId": intersection_id, "approaches": approaches,
+            "mainGreenShare": signal.mainGreenShare, "cycleSeconds": SIGNAL_CYCLE_SECONDS,
             "totalCarDelayMinutes": round(total_delay, 3),
         })
     return results
 
 
-def run_simulation(request):
+def run_simulation(request, report_roads=(), report_splits=()):
     closed = set(request.closedRoadIds)
     origin, destination = endpoint_node(request.originId), endpoint_node(request.destinationId)
     buses, shifted = bus_service(request, origin, destination, closed)
-    assignments = car_assignments(origin, destination, closed, TOTAL_TRIPS - shifted)
+    assignments = car_assignments(origin, destination, closed, request.tripDemand - shifted)
     pick_ids = [origin, destination, *(point.endpointId for bus in request.customBusRoutes
                 if bus.id in request.enabledBusRouteIds for point in bus.points)]
-    pick_ids.extend(id for stretch in request.laneStretches for id in (stretch.startId, stretch.endId))
+    pick_ids.extend(id for stretch in [*request.laneStretches, *request.speedStretches]
+                    for id in (stretch.startId, stretch.endId))
     split_ids = {PICKS_BY_ID[id]["roadId"] for id in pick_ids if id in PICKS_BY_ID}
+    split_ids.update(report_splits)
+    # Bus routing can traverse both halves of a road even when its stops
+    # are junctions. Use the same segment boundaries for car overlap.
+    split_ids.update(ROADS[id]["parentId"] for service in buses if service["operating"]
+                     for id in service["roadIds"] if "parentId" in ROADS[id])
+    # A route can already use midpoint pieces even when both endpoints are junctions.
+    # Apply whole-road edits to those same pieces instead of an unused parent.
+    split_ids.update(ROADS[id]["parentId"] for route, _ in assignments
+                     for id in route if "parentId" in ROADS[id])
     assignments = [(split_route(route, origin, split_ids), trips) for route, trips in assignments]
     completed = sum(trips for _, trips in assignments)
     arrivals, forward, reverse = Counter(), Counter(), Counter()
@@ -216,7 +231,7 @@ def run_simulation(request):
         partial += riders
         for index, (start, end, road_id) in enumerate(zip(nodes, nodes[1:], route)):
             car_trips = trips - riders if index in covered else trips
-            itinerary_volumes[road_id] += trips
+            itinerary_volumes[road_id, start == ROADS[road_id]["from"]] += trips
             direction = forward if start == ROADS[road_id]["from"] else reverse
             direction[road_id] += car_trips
             arrivals[end, ROADS[road_id].get("parentId", road_id)] += car_trips
@@ -229,37 +244,57 @@ def run_simulation(request):
 
     roads = []
     total_road_minutes = 0.0
-    active_ids = forward.keys() | reverse.keys() | closed | request.extraLanesByRoadId.keys()
+    active_ids = forward.keys() | reverse.keys() | closed | request.extraLanesByRoadId.keys() | set(report_roads)
     lanes = request.extraLanesByRoadId
     stretch_lanes = Counter()
     for stretch in request.laneStretches:
         for id in stretch.roadIds:
             stretch_lanes.update(ROAD_SPLITS[id] if id in split_ids else [id])
-    active_ids |= stretch_lanes.keys()
+    speed_limits = {}
+    for stretch in request.speedStretches:
+        for id in stretch.roadIds:
+            speed_limits.update(dict.fromkeys(ROAD_SPLITS[id] if id in split_ids else [id], stretch.speedLimitMph))
+    active_ids |= stretch_lanes.keys() | speed_limits.keys()
     for id in split_ids:
-        if any(piece in active_ids for piece in ROAD_SPLITS[id]):
-            active_ids.update(ROAD_SPLITS[id])
+        pieces = ROAD_SPLITS[id]
+        if id in active_ids or any(piece in active_ids for piece in pieces):
+            active_ids.update(pieces)
             active_ids.discard(id)
     for road_id in (sorted(active_ids) if PRINCETON_NETWORK.get("coverage") else ROADS):
         road = ROADS[road_id]
         is_closed = road_id in closed or road.get("parentId") in closed
         trips = forward[road_id] + reverse[road_id]
         parent = road.get("parentId", road_id)
-        capacity = CAPACITY_PER_LANE * (1 + lanes.get(parent, lanes.get(road.get("laneGroup"), 0)) + stretch_lanes[road_id])
+        capacity = CAPACITY_PER_LANE * (MODELED_BASE_LANES + lanes.get(parent, lanes.get(road.get("laneGroup"), 0)) + stretch_lanes[road_id])
         ratio = None if is_closed else trips / capacity
-        minutes = None if is_closed else road.get("freeFlowMinutes", FREE_FLOW_MINUTES) * (1 + 0.15 * ratio**4)
-        if minutes is not None:
-            # Evaluate the full itinerary at the resulting segment speeds.
-            # Partial bus trips remain in the denominator and retain their
-            # full route distance. Shuttle journey times are not simulated.
-            total_road_minutes += itinerary_volumes[road_id] * minutes
+        directional = {}
+        for direction in sorted(set(road_directions(road, "car")) | set(road_directions(road, "bus")) or {1}, reverse=True):
+            source = speed_record(road, direction)
+            original_limit = source["mph"]
+            speed_limit = speed_limits.get(road_id, original_limit)
+            distance = ROAD_LENGTHS[road_id]
+            original_free_flow = free_flow_minutes(distance, original_limit)
+            free_flow = free_flow_minutes(distance, speed_limit)
+            minutes = None if is_closed else free_flow * (1 + .15 * max(0, ratio**4 - 1))
+            # Partial bus riders still contribute a full itinerary at road speeds.
+            if minutes is not None:
+                total_road_minutes += itinerary_volumes[road_id, direction == 1] * minutes
+            directional["forward" if direction == 1 else "backward"] = {
+                "originalSpeedLimitMph": original_limit, "speedLimitMph": speed_limit,
+                "speedLimitSource": source,
+                "originalFreeFlowMinutes": round(original_free_flow, 6),
+                "freeFlowMinutes": round(free_flow, 6),
+                "travelMinutes": None if minutes is None else round(minutes, 6),
+                "effectiveSpeedKph": None if minutes is None else round(distance * .06 / minutes, 4),
+            }
+        displayed_direction = "backward" if reverse[road_id] > forward[road_id] else "forward"
         roads.append({
             "id": road_id, "carTrips": trips, "forwardCarTrips": forward[road_id],
             "reverseCarTrips": reverse[road_id], "closed": is_closed,
             "capacity": capacity,
+            **(directional.get(displayed_direction) or next(iter(directional.values()))),
+            "directions": directional,
             "congestionRatio": ratio,
-            "travelMinutes": None if minutes is None else round(minutes, 6),
-            "effectiveSpeedKph": None if minutes is None else round(ROAD_LENGTHS[road_id] * .06 / minutes, 4),
         })
 
     for service in buses:
@@ -270,9 +305,9 @@ def run_simulation(request):
     signals = signal_results(request.signals, arrivals)
     delay = sum(signal["totalCarDelayMinutes"] for signal in signals)
     return {
-        "totalCarTrips": TOTAL_TRIPS,
+        "totalCarTrips": request.tripDemand,
         "completedCarTrips": completed,
-        "unservedCarTrips": TOTAL_TRIPS - completed - shifted,
+        "unservedCarTrips": request.tripDemand - completed - shifted,
         "carTripsShiftedToBus": shifted,
         "partialBusTrips": partial,
         "avgCarTravelMinutes": round((total_road_minutes + delay) / completed, 2) if completed else None,

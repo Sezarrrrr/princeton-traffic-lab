@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from .princeton_network import ENDPOINTS, PICKS_BY_ID, ROADS, endpoint_node, follow_route, road_directions
 from .routing import find_route, legal_turn, next_via_history, way_for
 from .street_picks import length
+from .speed_limits import speed_record
 
 
 class LaneEndpoints(BaseModel):
@@ -16,6 +17,10 @@ class LaneEndpoints(BaseModel):
 
 class LaneStretch(LaneEndpoints):
     roadIds: list[str] = Field(min_length=1, max_length=2000)
+
+
+class SpeedStretch(LaneStretch):
+    speedLimitMph: int = Field(ge=5, le=85, strict=True)
 
 
 def street_name(road):
@@ -55,7 +60,11 @@ def lane_options(start, end, closed):
     candidates = {}
     boundary_parents = {PICKS_BY_ID[id]["roadId"] for id in (start, end) if id in PICKS_BY_ID}
     for key in sorted(common_streets(start, end)):
-        allowed = STREETS[key] - boundary_parents
+        boundaries = {start, end}
+        allowed = {id for id in STREETS[key] - boundary_parents
+                   if not ROADS[id].get("parentId") or
+                   boundaries.intersection((ROADS[id]["from"], ROADS[id]["to"])) &
+                   PICKS_BY_ID.keys()}
         for src, dst in ((start, end), (end, start)):
             path = find_route(src, dst, closed, allowed_roads=allowed)
             if not path:
@@ -75,6 +84,8 @@ def lane_options(start, end, closed):
                 candidates.setdefault(signature, {
                     "street": street_name(ROADS[option[0]]), "roadIds": option,
                     "distanceMeters": round(distance),
+                    "speedLimitsMph": sorted({speed_record(ROADS[id], direction)["mph"]
+                                              for id in option for direction in road_directions(ROADS[id], "car")}),
                 })
     return sorted(candidates.values(), key=lambda option: option["distanceMeters"])[:5]
 

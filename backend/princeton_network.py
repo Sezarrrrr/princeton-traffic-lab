@@ -132,6 +132,13 @@ PRINCETON_NETWORK = json.loads(
 generated = Path(__file__).with_name("osm-network.json")
 if generated.exists():
     PRINCETON_NETWORK = json.loads(generated.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+    speed_snapshot = Path(__file__).with_name("osm-speed-limits.json")
+    if speed_snapshot.exists():
+        speed_data = json.loads(speed_snapshot.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
+        if speed_data["networkImportedUtc"] == PRINCETON_NETWORK.get("coverage", {}).get("importedUtc"):
+            for road in PRINCETON_NETWORK["roads"]:
+                if road["id"] in speed_data["limits"]:
+                    road.setdefault("speedLimits", speed_data["limits"][road["id"]])
 NODES, ROADS, ENDPOINTS, BUS_PATHS = validate_network(PRINCETON_NETWORK)
 STRETCHES, STREET_PICKS, PICK_ROADS = build_stretches(ROADS, NODES)
 PICKS_BY_ID = {pick["id"]: pick for pick in STREET_PICKS}

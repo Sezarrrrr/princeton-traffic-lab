@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import math
 from pathlib import Path
+import sys
 from urllib.parse import urlencode
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -14,6 +15,9 @@ import xml.etree.ElementTree as ET
 EARTH = 6_371_000
 MILE = 1609.344
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from backend.speed_limits import speed_records
 OVERPASS = "https://overpass-api.de/api/interpreter"
 OSM_MAP = "https://api.openstreetmap.org/api/0.6/map"
 MOTOR_ROADS = {
@@ -228,10 +232,17 @@ def build(documents, base, center, radius, source):
             ids.append(segment_id)
             way_matches = [
                 way_id for way_id in ways_by_node.get(refs[i], ())
-                if refs[j] in way_nodes[way_id]
+                if all(ref in way_nodes[way_id] for ref in refs[i:j+1])
             ]
+            limits = {}
+            if len(way_matches) == 1:
+                way_id = way_matches[0]
+                nodes_in_way, attributes, _ = ways[way_id]
+                orientation = 1 if nodes_in_way.index(refs[i]) < nodes_in_way.index(refs[j]) else -1
+                limits = speed_records(way_id, attributes, orientation)
             roads.append({**road, "id": segment_id, "from": start, "to": end, "laneGroup": road["id"],
                           **({"osmWayRef": way_matches[0]} if len(way_matches) == 1 else {}),
+                          **({"speedLimits": limits} if limits else {}),
                           "geometry": [nodes[start]["latLng"], *geometry[i+1:j], nodes[end]["latLng"]],
                           "freeFlowMinutes": road.get("freeFlowMinutes", 2) * lengths[index] / total})
             start = end
@@ -263,11 +274,11 @@ def build(documents, base, center, radius, source):
                 return
             geometry = [nodes[start]["latLng"], *(point for _, point in group[1:-1]), nodes[end]["latLng"]]
             road_id = f"osm_w{way_id}_{start}_{end}"
-            speed = 72 if attributes["highway"].startswith(("motorway", "trunk")) else 40
+            limits = speed_records(way_id, attributes)
             roads.append({"id": road_id, "name": name, "from": start, "to": end, "geometry": geometry,
                           "twoWay": len(allowed["car"]) == 2, "carAccess": bool(allowed["car"]),
                           "busAccess": bool(allowed["bus"]), "directions": allowed, "osmWay": way_id,
-                          "freeFlowMinutes": length / (speed * 1000 / 60),
+                          **({"speedLimits": limits} if limits else {}),
                           **{key: attributes[key] for key in ("bridge", "tunnel", "layer") if key in attributes}})
 
         for a, b in zip(refs, refs[1:]):
@@ -397,8 +408,6 @@ def main():
     base = json.loads(args.base.read_text(encoding="utf-8"))
     source = args.overpass or OSM_MAP
     data = build(documents, base, args.center, radius, source)
-    import sys
-    sys.path.insert(0, str(ROOT))
     from backend.princeton_network import validate_network
     validate_network(data)
     temporary = args.output.with_suffix(".tmp")

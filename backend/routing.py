@@ -1,9 +1,9 @@
 """Directed routing for cars and shuttles on the imported OSM graph."""
 from collections import defaultdict
 from heapq import heappop, heappush
-from math import cos, hypot, radians
-
 from .princeton_network import PRINCETON_NETWORK, ROADS, road_directions
+from .speed_limits import free_flow_minutes, speed_record
+from .street_picks import length
 
 ADJACENCY = {mode: defaultdict(list) for mode in ("car", "bus")}
 BARRIERS = PRINCETON_NETWORK.get("barriers", {})
@@ -14,14 +14,10 @@ for restriction in PRINCETON_NETWORK.get("turnRestrictions", []):
     TURNS[restriction["node"]].append(restriction)
 
 for road_id, road in ROADS.items():
-    # Route by modeled free-flow time on imported data. Preserve geographic
-    # weighting for curated pieces whose times are calibrated for the demo.
-    cost = road["freeFlowMinutes"] if "osmWay" in road else sum(
-        hypot((b[0] - a[0]), (b[1] - a[1]) * cos(radians(a[0]))) * 166.8
-        for a, b in zip(road["geometry"], road["geometry"][1:])
-    )
+    distance = length(road["geometry"])
     for mode, graph in ADJACENCY.items():
         for direction in road_directions(road, mode):
+            cost = free_flow_minutes(distance, speed_record(road, direction)["mph"])
             src, dst = (road["from"], road["to"]) if direction == 1 else (road["to"], road["from"])
             graph[src].append((dst, road_id, cost))
 

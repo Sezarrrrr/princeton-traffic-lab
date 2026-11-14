@@ -20,24 +20,36 @@ let roadsById = new Map(), nodesById = new Map(), signalIds = new Set();
 let junctions = [];
 let junctionIds = new Set();
 let roadResults = {};
-const mapPicking = () => !!(laneDraft && !laneDraft.options.length) || !!endpointMode || draftStop !== null;
+let activeTool = null;
+let singleRoadLane = false;
+const mapPicking = () => !!endpointMode || draftStop !== null ||
+  !!(laneDraft && !laneDraft.options.length) || (activeTool === "signal" && !selected);
+const pickingRoad = () => activeTool === "closure" || singleRoadLane;
+
 function pickMapPoint(id) {
   if (!junctionIds.has(id)) return;
-  if (laneDraft) pickLanePoint(id);
+  if (activeTool === "signal") {
+    if (canSignal(id)) select("node", id);
+    else $("map-tool-instruction").textContent = "Pick a junction with a modeled car approach.";
+  } else if (laneDraft) pickLanePoint(id);
   else if (draftStop !== null) addDraftPoint(id);
   else chooseEndpoint(id);
 }
 let selected = null;        // { type: "road" | "node", id }
+let focusedRoadEdit = null;
+const openRoadDetails = new Set();
 let requestCounter = 0;     // ignore old responses if the user clicks quickly
 const geometry = {};        // road id -> { p1, p2 } in SVG coordinates
 const nodePoints = {};      // intersection id -> { x, y } in SVG coordinates
 
 // Everything the user has changed. Reset puts it back to this "empty" state.
 const state = {
+  tripDemand: 100,
   originId: null,
   destinationId: null,
   closed: new Set(),        // road ids
   laneStretches: [],
+  speedStretches: [],
   lanes: {},                // road id -> extra lanes (1..MAX_EXTRA_LANES)
   signals: new Map(),       // intersection id -> mainGreenShare (0..1)
   busRoutes: new Set(),
@@ -47,11 +59,13 @@ const state = {
 // The full scenario we send to the backend (shared API contract).
 function currentScenario() {
   return {
+    tripDemand: state.tripDemand,
     originId: state.originId ?? undefined,
     destinationId: state.destinationId ?? undefined,
     closedRoadIds: [...state.closed],
     extraLanesByRoadId: { ...state.lanes },
     laneStretches: [...state.laneStretches],
+    speedStretches: [...state.speedStretches],
     signals: [...state.signals].map(([intersectionId, mainGreenShare]) => ({ intersectionId, mainGreenShare })),
     enabledBusRouteIds: customRoutes.filter(route => state.busRoutes.has(route.id)).map(route => route.id),
     customBusRoutes: customRoutes.map(({ id, name, points }) => ({ id, name, points })),
@@ -61,11 +75,13 @@ function currentScenario() {
 
 function snapshot() {
   return {
+    tripDemand: state.tripDemand,
     originId: state.originId,
     destinationId: state.destinationId,
     closed: new Set(state.closed),
     lanes: { ...state.lanes },
     laneStretches: [...state.laneStretches],
+    speedStretches: [...state.speedStretches],
     signals: new Map(state.signals),
     busRoutes: new Set(state.busRoutes),
     busPercent: state.busPercent
@@ -97,13 +113,14 @@ const formatWait = value => value == null ? "—" : `${(value * 60).toFixed(1)} 
 const percent = share => `${Math.round(share * 100)}%`;
 const roadById = id => roadsById.get(id);
 const nodeById = id => nodesById.get(id);
-const roadName = id => (roadById(id) || { name: id }).name;
-const nodeName = id => (nodeById(id) || { name: id }).name;
+const roadName = id => roadById(id)?.name ?? "Road segment";
+const nodeName = id => endpoints.get(id)?.name ?? nodeById(id)?.name ?? "Road junction";
 const endpointNode = id => endpoints.get(id)?.nodeId ?? id;
+const hasTrip = () => Boolean(state.originId && state.destinationId);
 const routeRoads = () => new Set(result?.scenario.carRoutes?.flatMap(route => route.roadIds) || []);
 const activeRouteRoads = () => resultMatchesEndpoints() ? routeRoads() : new Set();
 const resultMatchesEndpoints = () => confirmedState?.originId === state.originId &&
-  confirmedState?.destinationId === state.destinationId;
+  confirmedState?.destinationId === state.destinationId && confirmedState?.tripDemand === state.tripDemand;
 const canSignal = id => signalIds.has(id);
 
 function mapJunctions() {
@@ -130,11 +147,25 @@ function roadResult(which, id) {
   const road = roadById(id);
   const parent = road?.parentId && roadResults[which]?.get(road.parentId);
   if (parent) {
-    const fraction = road.freeFlowMinutes / (roadById(road.parentId).freeFlowMinutes ?? 2);
-    return { ...parent, id, travelMinutes: parent.travelMinutes === null ? null : parent.travelMinutes * fraction };
+    const fraction = StreetMap.roadDistance(road) / StreetMap.roadDistance(roadById(road.parentId));
+    return { ...parent, id, freeFlowMinutes: parent.freeFlowMinutes * fraction,
+      travelMinutes: parent.travelMinutes === null ? null : parent.travelMinutes * fraction };
   }
-  return road ? { id, carTrips: 0, travelMinutes: road.freeFlowMinutes ?? 2, congestionRatio: 0, closed: false } : null;
+  const split = roadParts.get(id)?.map(part => roadResults[which]?.get(part));
+  if (split?.length === 2 && split.every(Boolean) && split[0].capacity === split[1].capacity &&
+      split[0].congestionRatio === split[1].congestionRatio && split[0].speedLimitMph === split[1].speedLimitMph) {
+    const [a, b] = split;
+    return { ...a, id, freeFlowMinutes: a.freeFlowMinutes + b.freeFlowMinutes,
+      travelMinutes: a.closed || b.closed ? null : a.travelMinutes + b.travelMinutes };
+  }
+  if (!road) return null;
+  const source = road.speedLimits?.[road.directions?.car?.[0] === -1 ? "backward" : "forward"] ??
+    { mph: 25, source: "Simulation assumption" };
+  const minutes = StreetMap.roadDistance(road) * .06 / (source.mph * 1.609344);
+  return { id, carTrips: 0, freeFlowMinutes: minutes, travelMinutes: minutes, congestionRatio: 0,
+    closed: false, capacity: network.modeledBaseCapacity, speedLimitMph: source.mph, speedLimitSource: source };
 }
+const roadParts = new Map();
 
 // Compare the backend's travel times for the same segment and trip endpoints.
 function roadColorKey(id) {
@@ -142,7 +173,7 @@ function roadColorKey(id) {
   const before = roadResult("baseline", id), after = roadResult("scenario", id);
   if (!resultMatchesEndpoints() || !before || !after) return "empty";
   if (after.closed) return "closed";
-  if (!before.carTrips && !after.carTrips) return "empty";
+  if (!before.carTrips && !after.carTrips && after.speedLimitMph === after.originalSpeedLimitMph) return "empty";
   if (after.travelMinutes < before.travelMinutes - 0.000001) return "faster";
   if (after.travelMinutes > before.travelMinutes + 0.000001) return "slower";
   if (after.effectiveSpeedKph != null && before.effectiveSpeedKph != null) {
@@ -197,18 +228,23 @@ function drawMap() {
   const roadLayer = svgEl("g");
   const importedLayer = svgEl("g", { id: "schematic-import" });
   const customLayer = svgEl("g", { id: "schematic-custom" });
+  const laneLayer = svgEl("g", { id: "schematic-lane-edits", "pointer-events": "none" });
   const coverageLayer = svgEl("g");
   const importedPaths = [];
   const endpointLayer = svgEl("g", { id: "schematic-endpoints" });
   const carLayer = svgEl("g", { id: "car-layer" });
   const labelLayer = svgEl("g");
   const nodeLayer = svgEl("g");
-  const junctionLayer = svgEl("path", { class: "schematic-junction-picks" });
-  junctionLayer.setAttribute("d", junctions.map(({ id }) => {
+  const junctionPaths = junctions.map(({ id }) => {
     const { x, y } = nodePoints[id];
     return `M${x.toFixed(2)} ${y.toFixed(2)}h.01`;
-  }).join(""));
-  svg.append(coverageLayer, importedLayer, roadLayer, carLayer, labelLayer, nodeLayer, customLayer, junctionLayer, endpointLayer);
+  }).join("");
+  const junctionLayer = svgEl("g", { class: "schematic-junction-picks" });
+  junctionLayer.append(
+    svgEl("path", { d: junctionPaths, stroke: "#a95622", "stroke-width": 3.6 }),
+    svgEl("path", { d: junctionPaths, stroke: "#ffcf91", "stroke-width": 2.4 })
+  );
+  svg.append(coverageLayer, importedLayer, roadLayer, laneLayer, carLayer, labelLayer, nodeLayer, customLayer, junctionLayer, endpointLayer);
   if (network.coverage) {
     const center = project({ x: 0, y: 0 });
     const edge = project({ x: network.coverage.radiusMeters, y: 0 });
@@ -264,7 +300,7 @@ function drawMap() {
         if (closest) pickMapPoint(closest.id);
       } else {
         let junction, nearest = 1.7;
-        for (const node of network.intersections) {
+        for (const node of pickingRoad() ? [] : network.intersections) {
           if (!node.imported) continue;
           const point = nodePoints[node.id];
           const distance = Math.hypot(point.x - p.x, point.y - p.y);
@@ -323,7 +359,38 @@ function drawMap() {
 }
 
 // ---- Updating the map from the latest results ----
-function renderMap() {
+function laneMarkings() {
+  const counts = new Map(Object.entries(state.lanes));
+  const edits = [...counts.keys()].map(id => ({ roadIds: [id] }));
+  for (const edit of state.laneStretches) {
+    edits.push(edit);
+    for (const id of edit.roadIds) counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  for (const [id, extra] of counts) {
+    const parent = roadById(id)?.parentId;
+    if (parent) counts.set(id, extra + (counts.get(parent) || 0));
+  }
+  const displayCounts = new Map(counts);
+  for (const id of roadResults.scenario?.keys() || []) {
+    const parent = roadById(id)?.parentId;
+    if (!counts.has(parent)) continue;
+    displayCounts.delete(parent);
+    displayCounts.set(id, counts.get(id) || counts.get(parent));
+  }
+  return {
+    counts: displayCounts,
+    labels: edits.map(({ roadIds }) => {
+      const added = roadIds.map(id => counts.get(id));
+      const base = network.modeledBaseLanes;
+      const low = Math.min(...added), high = Math.max(...added);
+      const range = offset => low === high ? low + offset : `${low + offset}–${high + offset}`;
+      return { roadIds, text: Number.isInteger(base)
+        ? `${range(base)} lanes` : `+${range(0)} lane${high === 1 ? "" : "s"}` };
+    })
+  };
+}
+
+function renderMap(laneEdits) {
   const routeIds = activeRouteRoads();
   const imported = $("schematic-import-active");
   if (imported) {
@@ -341,8 +408,7 @@ function renderMap() {
   for (const g of document.querySelectorAll(".road")) {
     const id = g.dataset.roadId;
     const isClosed = state.closed.has(id);
-    const lanes = state.lanes[id] || 0;
-    const width = (routeIds.has(id) ? 9 : 5) + lanes * 5;
+    const width = routeIds.has(id) ? 9 : 5;
     g.classList.toggle("closed", isClosed);
     g.classList.toggle("on-route", routeIds.has(id));
     g.classList.toggle("selected", selected && selected.type === "road" && selected.id === id);
@@ -350,6 +416,28 @@ function renderMap() {
     line.setAttribute("stroke", `var(--${roadColorKey(id)})`);
     line.setAttribute("stroke-width", width);
     g.querySelector(".halo").setAttribute("stroke-width", width + 12);
+  }
+
+  const lanes = $("schematic-lane-edits");
+  lanes.replaceChildren();
+  for (const [id, count] of laneEdits.counts) {
+    if (!geometry[id]) continue;
+    const { p1, p2 } = geometry[id];
+    const line = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y };
+    lanes.append(
+      svgEl("line", { ...line, stroke: `var(--${roadColorKey(id)})`,
+        "stroke-width": (routeIds.has(id) ? 9 : 5) + 2 * count, "stroke-linecap": "round" }),
+      ...(!state.closed.has(id) && !state.closed.has(roadById(id)?.parentId)
+        ? [svgEl("line", { ...line, class: "lane-divider" })] : [])
+    );
+  }
+  for (const { roadIds, text } of laneEdits.labels) {
+    const middle = geometry[roadIds[Math.floor(roadIds.length / 2)]];
+    if (!middle) continue;
+    const label = svgEl("text", { class: "schematic-lane-count",
+      x: (middle.p1.x + middle.p2.x) / 2, y: (middle.p1.y + middle.p2.y) / 2 - 7 });
+    label.textContent = text;
+    lanes.append(label);
   }
 
   for (const label of document.querySelectorAll(".trip-badge")) {
@@ -372,6 +460,7 @@ function renderMap() {
   }
 
   document.querySelectorAll(".schematic-pin").forEach(pin => pin.remove());
+  if (!hasTrip()) return;
   for (const [field, letter] of [["originId", "A"], ["destinationId", "B"]]) {
     const point = nodePoints[endpointNode(state[field])];
     if (!point) continue;
@@ -397,12 +486,14 @@ function renderSchematicCustomBuses() {
       const { p1, p2 } = geometry[id];
       group.append(svgEl("line", { class: "bus-line", x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }));
     }
-    for (const point of points) {
+    for (const [index, point] of points.entries()) {
       const p = nodePoints[endpointNode(point.endpointId)];
       if (!p) continue;
       const stop = svgEl("circle", { class: "schematic-stop", cx: p.x + 5, cy: p.y - 5, r: point.stop ? 4 : 2 });
       makeClickable(stop, endpoints.get(point.endpointId).name, () => pickMapPoint(point.endpointId));
-      group.append(stop);
+      const label = svgEl("text", { class: "schematic-stop-number", x: p.x + 5, y: p.y - 5 });
+      label.textContent = index + 1;
+      group.append(stop, label);
     }
     layer.append(group);
   };
@@ -411,17 +502,15 @@ function renderSchematicCustomBuses() {
     const service = result?.scenario.busRoutes?.find(item => item.id === route.id);
     draw(route.points, service?.roadIds || [], route.color);
   }
-  if (draft) draw(draft.points, preview?.roadIds || [], draft.color);
+  if (draft) draw(draft.points, preview?.legs?.flatMap(leg => leg.roadIds) || [], draft.color);
 }
 
 // ---- Panel: selected road or intersection ----
 function renderSelected() {
   const box = $("selected");
-  box.innerHTML = "";
-  if (!selected) {
-    box.append(el("h2", {}, "Selected"), el("p", { class: "muted" }, "Click a road or intersection on the map."));
-    return;
-  }
+  box.hidden = !activeTool || !selected;
+  box.replaceChildren();
+  if (box.hidden) return;
   if (selected.type === "road") renderSelectedRoad(box, selected.id);
   else renderSelectedNode(box, selected.id);
 }
@@ -431,15 +520,15 @@ function renderSelectedRoad(box, id) {
   const lanes = state.lanes[id] || 0;
   const before = roadResult("baseline", id), after = roadResult("scenario", id);
   const trips = r => (r ? String(r.carTrips) : "–");
-  const mins = r => (r && r.travelMinutes !== null ? `${r.travelMinutes.toFixed(1)} min` : "–");
-  const speed = r => r?.effectiveSpeedKph != null ? `${r.effectiveSpeedKph.toFixed(1)} km/h` : "–";
+  const mins = r => r?.travelMinutes != null ? `${r.travelMinutes.toFixed(3)} min` : "–";
+  const speed = r => r?.effectiveSpeedKph != null ? `${(r.effectiveSpeedKph / 1.609344).toFixed(1)} mph` : "–";
+  const limit = value => value != null ? `${Number(value.toFixed(1))} mph` : "–";
+  const freeFlow = value => value != null ? `${value.toFixed(2)} min` : "–";
   const capacity = r => r?.capacity != null ? String(r.capacity) : "–";
   const ratio = r => (r && r.congestionRatio !== null ? r.congestionRatio.toFixed(2) : "–");
 
   box.append(el("h2", {}, roadName(id)));
-  const meta = el("p", { class: "selected-meta muted" }, "ID ");
-  meta.append(el("code", {}, id), ` · ${isClosed ? "Closed" : "Open"}`);
-  box.append(meta);
+  box.append(el("p", { class: "selected-meta muted" }, isClosed ? "Closed" : "Open"));
   const road = roadById(id);
   if (road.carAccess === false) box.append(el("p", { class: "small muted" }, "Restricted to non-car routing."));
   else if (road.twoWay === false) {
@@ -450,22 +539,50 @@ function renderSelectedRoad(box, id) {
   const table = el("table", { class: "compare" });
   table.innerHTML = `<thead><tr><th></th><th>Original</th><th>Modified</th></tr></thead>`;
   const body = el("tbody");
-  for (const [label, fn] of [["Car trips", trips], ["Travel time", mins], ["Effective speed", speed], ["Capacity", capacity], ["Volume / capacity", ratio]]) {
+  for (const [label, original, modified] of [
+    ["Speed limit", limit(before?.speedLimitMph ?? after?.originalSpeedLimitMph), limit(after?.speedLimitMph)],
+    ["Free-flow time", freeFlow(before?.freeFlowMinutes ?? after?.originalFreeFlowMinutes), freeFlow(after?.freeFlowMinutes)]
+  ]) {
+    const tr = el("tr");
+    tr.append(el("th", { scope: "row" }, label), el("td", {}, original), el("td", {}, modified));
+    body.append(tr);
+  }
+  for (const [label, fn] of [["Car trips", trips], ["Segment travel time", mins], ["Effective speed", speed], ["Capacity", capacity], ["Volume / capacity", ratio]]) {
     const tr = el("tr");
     tr.append(el("th", { scope: "row" }, label), el("td", {}, fn(before)), el("td", {}, fn(after)));
     body.append(tr);
   }
   table.append(body);
   box.append(table);
+  const sources = el("div", { class: "small muted speed-sources" });
+  const directions = road.directions?.car ?? (road.twoWay === false ? [1] : [1, -1]);
+  for (const direction of directions.length ? directions : [1]) {
+    const key = direction === 1 ? "forward" : "backward";
+    const source = after?.directions?.[key]?.speedLimitSource ?? road.speedLimits?.[key] ??
+      { mph: 25, source: "Simulation assumption" };
+    const toward = direction === 1 ? road.to : road.from;
+    const row = el("p", {}, `Toward ${nodeName(toward)} · ${limit(source.mph)} · `);
+    row.append(source.url ? el("a", { href: source.url, target: "_blank", rel: "noopener" }, source.source) : source.source);
+    const actual = after?.directions?.[key];
+    if (directions.length > 1 && actual && Object.values(after.directions)
+      .some(other => other.speedLimitMph !== actual.speedLimitMph)) {
+      row.append(` · ${speed(actual)} effective`);
+    }
+    sources.append(row);
+  }
+  box.append(sources);
   if (road.osmWay) box.append(el("p", { class: "small muted" }, "Imported street segment"));
 
-  const actions = el("div", { class: "actions" });
-  const toggle = el("button", { type: "button", class: "primary" }, isClosed ? "Reopen road" : "Close road");
-  toggle.addEventListener("click", () => change(() => {
-    if (state.closed.has(id)) state.closed.delete(id); else state.closed.add(id);
-  }));
-  actions.append(toggle);
-  box.append(actions);
+  if (activeTool === "closure") {
+    const actions = el("div", { class: "actions" });
+    const toggle = el("button", { type: "button", class: "primary" }, isClosed ? "Reopen road" : "Confirm closure");
+    toggle.addEventListener("click", () => change(() => {
+      if (state.closed.has(id)) state.closed.delete(id); else state.closed.add(id);
+    }));
+    actions.append(toggle);
+    box.append(actions);
+  }
+  if (!singleRoadLane) return;
 
   const laneRow = el("div", { class: "stepper" });
   const minus = el("button", { type: "button", "aria-label": "Remove a lane" }, "−");
@@ -482,12 +599,10 @@ function renderSelectedRoad(box, id) {
 
 function renderSelectedNode(box, id) {
   box.append(el("h2", {}, nodeName(id)));
-  const meta = el("p", { class: "selected-meta muted" }, "ID ");
-  meta.append(el("code", {}, id), " · Intersection");
-  box.append(meta);
+  box.append(el("p", { class: "selected-meta muted" }, "Intersection"));
 
   if (!canSignal(id)) {
-    box.append(el("p", { class: "muted" }, "The simulation doesn't support a signal at this intersection. Orange-ringed intersections do."));
+    box.append(el("p", { class: "muted" }, "This junction has no modeled signal approaches. Pick another intersection."));
     return;
   }
   const hasSignal = state.signals.has(id);
@@ -550,7 +665,6 @@ function renderBus() {
         state.busRoutes.delete(route.id);
         if (focusedBusId === route.id) focusedBusId = null;
       }
-      persistCustomRoutes();
     }));
     const name = el("button", { type: "button", class: "bus-line-name",
       "aria-pressed": String(focusedBusId === route.id) }, route.name);
@@ -586,7 +700,7 @@ function renderBus() {
     if (route.points) {
       const edit = el("button", { type: "button", "aria-label": `Edit ${route.name}` }, "Edit");
       const remove = el("button", { type: "button", "aria-label": `Delete ${route.name}` }, "Delete");
-      edit.onclick = () => startBusDraft(route);
+      edit.onclick = () => activateTool("bus", route);
       remove.onclick = () => {
         if (draft?.id === route.id) closeBusDraft();
         change(() => {
@@ -605,40 +719,122 @@ function renderBus() {
     box.append(el("p", { class: "muted" }, "No saved bus lines."));
   }
   addSlider(box, "bus-percent", "Eligible trips switching to bus", 0, 50, 5, state.busPercent,
-    value => `${value}%`, value => { state.busPercent = value; persistCustomRoutes(); }, CONFIG.useMock);
+    value => `${value}%`, value => { state.busPercent = value; }, CONFIG.useMock);
   if (restoreSliderFocus) $("bus-percent").focus({ preventScroll: true });
 }
 
 // ---- Panel: list of changes ----
+function crossStreet(id, street, fallback) {
+  const name = endpoints.get(id)?.name ?? fallback;
+  const shortName = name.split(" & ").filter(part => part !== street &&
+    !(street === "Nassau Street" && part === "Nassau")).join(" & ");
+  return shortName || fallback;
+}
+
+function stretchName({ startId, endId, roadIds }) {
+  const street = roadName(roadIds[0]).split(" (")[0];
+  return `${street} · ${crossStreet(startId, street, "Start")} → ${crossStreet(endId, street, "End")}`;
+}
+
+function appendRoadEditDetails(li, edit, request, isOpen) {
+  const details = el("details", { class: "road-edit-details" });
+  const content = el("div", { class: "small" });
+  details.append(el("summary", {}, "Details"), content);
+  li.append(details);
+  let loaded = false;
+  const load = async () => {
+    if (loaded) return;
+    loaded = true;
+    content.textContent = "Comparing this edit…";
+    try {
+      const segments = await postScenario("road-edit-details", { scenario: currentScenario(), ...request });
+      if (!details.isConnected) return;
+      const duration = value => value == null ? "Closed" : `${value.toFixed(3)} min`;
+      const rows = el("ul", { class: "road-edit-segments" });
+      for (const [index, { id, before, after }] of segments.entries()) {
+        const road = roadById(id);
+        const from = endpoints.get(road.from)?.name, to = endpoints.get(road.to)?.name;
+        const junction = name => name?.includes(" & ") && !name.includes("road junction") ? name : null;
+        const names = [junction(from), junction(to)].filter(Boolean);
+        const label = names.length ? names.join(" → ") : `Segment ${index + 1}`;
+        const row = el("li");
+        row.append(el("strong", {}, label),
+          el("div", {}, `Capacity ${before.capacity} → ${after.capacity} · ${duration(before.travelMinutes)} → ${duration(after.travelMinutes)}`));
+        if (request.speedIndex != null) row.append(el("div", {}, `Speed limit ${before.speedLimitMph} → ${after.speedLimitMph} mph`));
+        rows.append(row);
+      }
+      content.replaceChildren(el("p", { class: "muted" }, "Same scenario, with and without this edit."), rows);
+    } catch (error) {
+      content.textContent = error.message;
+      loaded = false;
+    }
+  };
+  details.open = isOpen;
+  details.ontoggle = () => {
+    if (!details.isConnected) return;
+    if (details.open) { openRoadDetails.add(edit); load(); }
+    else openRoadDetails.delete(edit);
+  };
+}
+
 function renderChanges() {
   const list = $("changes");
   list.innerHTML = "";
   const items = [];
   for (const id of state.closed) items.push([`Closed ${roadName(id)}`, () => state.closed.delete(id)]);
-  for (const [id, n] of Object.entries(state.lanes)) items.push([`+${n} lane${n > 1 ? "s" : ""} on ${roadName(id)}`, () => delete state.lanes[id]]);
+  for (const [id, n] of Object.entries(state.lanes)) {
+    const { from, to } = roadById(id);
+    const stretch = { startId: from, endId: to, roadIds: [id] };
+    items.push([`${stretchName(stretch)} · +${n} lane${n > 1 ? "s" : ""}`,
+      () => delete state.lanes[id], id, stretch, { extraLaneRoadId: id }]);
+  }
   for (const [index, stretch] of state.laneStretches.entries()) {
-    const street = roadName(stretch.roadIds[0]).split(" (")[0];
-    const from = endpoints.get(stretch.startId).name;
-    const to = endpoints.get(stretch.endId).name;
-    items.push([`+1 lane on ${street} · ${from} → ${to}`, () => state.laneStretches.splice(index, 1)]);
+    items.push([`${stretchName(stretch)} · +1 lane`, () => state.laneStretches.splice(index, 1),
+      stretch, stretch, { laneIndex: index }]);
+  }
+  for (const [index, stretch] of state.speedStretches.entries()) {
+    items.push([`${stretchName(stretch)} · ${stretch.speedLimitMph} mph`, () => state.speedStretches.splice(index, 1),
+      stretch, stretch, { speedIndex: index }]);
   }
   for (const [id, share] of state.signals) items.push([`Signal at ${nodeName(id)} (main road green ${percent(share)})`, () => state.signals.delete(id)]);
   for (const route of busRoutes()) {
     if (state.busRoutes.has(route.id)) items.push([`${route.name} · ${state.busPercent}% of eligible trips switch`, () => {
       state.busRoutes.delete(route.id);
-      if (route.points) persistCustomRoutes();
     }]);
   }
 
+  const editKeys = new Set(items.map(item => item[2]));
+  if (!editKeys.has(focusedRoadEdit)) clearRoadEditFocus();
+  for (const key of openRoadDetails) if (!editKeys.has(key)) openRoadDetails.delete(key);
   if (!items.length) {
     list.append(el("li", { class: "muted" }, "No changes. This is the original scenario."));
     return;
   }
-  for (const [text, undo] of items) {
+  for (const [text, undo, edit, stretch, request] of items) {
     const li = el("li");
     const remove = el("button", { type: "button", class: "link", "aria-label": `Undo: ${text}` }, "Undo");
     remove.addEventListener("click", () => change(undo));
-    li.append(el("span", {}, text), remove);
+    if (stretch) {
+      li.classList.add("road-edit");
+      const actions = el("div", { class: "road-edit-actions" });
+      const show = el("button", { type: "button", class: "link",
+        "aria-label": `Show on map: ${text}`, "aria-pressed": String(focusedRoadEdit === edit) }, "Show on map");
+      show.onclick = () => {
+        const alreadyFocused = focusedRoadEdit === edit;
+        cancelMapTool();
+        if (!alreadyFocused) {
+          focusedRoadEdit = edit;
+          showView("street");
+          StreetMap.focusRoadEdit([stretch.startId, stretch.endId], stretch.roadIds);
+        }
+        render();
+        list.querySelectorAll(".road-edit-actions button:first-child")[indexOfEdit]?.focus({ preventScroll: true });
+      };
+      const indexOfEdit = list.querySelectorAll(".road-edit").length;
+      actions.append(show, remove);
+      li.append(el("span", {}, text), actions);
+      if (!CONFIG.useMock) appendRoadEditDetails(li, edit, request, openRoadDetails.has(edit));
+    } else li.append(el("span", {}, text), remove);
     list.append(li);
   }
 }
@@ -646,8 +842,13 @@ function renderChanges() {
 // ---- Panel: original vs. modified ----
 function renderComparison() {
   const body = $("compare-body");
-  body.innerHTML = "";
-  if (!result || !resultMatchesEndpoints()) { $("conservation").textContent = ""; return; }
+  body.replaceChildren();
+  const table = $("comparison-table"), empty = $("comparison-empty"), check = $("conservation");
+  table.hidden = true;
+  empty.hidden = false;
+  check.textContent = "";
+  empty.textContent = hasTrip() ? "No changes to trip results yet." : "Choose both trip endpoints to see results.";
+  if (!result || !resultMatchesEndpoints()) return;
   const b = result.baseline, s = result.scenario;
 
   // [label, before, after, how to format, is "up" bad?]
@@ -660,27 +861,23 @@ function renderComparison() {
   if ("totalCarTrips" in s) rows.push(["Total trips", b.totalCarTrips, s.totalCarTrips, String, null]);
 
   for (const [label, before, after, fmt, upIsBad] of rows) {
+    const original = fmt(before), modified = fmt(after);
+    if (original === modified) continue;
     const tr = el("tr");
-    const afterCell = el("td", {}, fmt(after));
-    if (upIsBad !== null && before !== null && after !== null && before !== after) {
+    const afterCell = el("td", {}, modified);
+    if (upIsBad !== null && before !== null && after !== null) {
       const worse = (after > before) === upIsBad;
       afterCell.classList.add(worse ? "worse" : "better");
     }
-    tr.append(el("th", { scope: "row" }, label), el("td", {}, fmt(before)), afterCell);
+    tr.append(el("th", { scope: "row" }, label), el("td", {}, original), afterCell);
     body.append(tr);
   }
 
-  // Trip conservation check (only if the backend sends the totals).
-  const check = $("conservation");
+  table.hidden = !body.childElementCount;
+  empty.hidden = !table.hidden;
   if ("totalCarTrips" in s && "completedCarTrips" in s) {
     const ok = r => r.completedCarTrips + r.unservedCarTrips + r.carTripsShiftedToBus === r.totalCarTrips;
-    check.textContent = ok(b) && ok(s)
-      ? `✓ ${s.completedCarTrips} completed with car travel + ${s.unservedCarTrips} unserved + ${s.carTripsShiftedToBus} entirely by bus = ${s.totalCarTrips}.` +
-        (s.partialBusTrips ? ` The completed count includes ${s.partialBusTrips} partial bus trips. Average car trip time uses the full route at modeled road speeds.` : "")
-      : "⚠ Trip totals don't add up. Check the backend response.";
-    check.classList.toggle("worse", !(ok(b) && ok(s)));
-  } else {
-    check.textContent = "";
+    if (!ok(b) || !ok(s)) check.textContent = "⚠ Trip totals don't add up. Check the backend response.";
   }
 }
 
@@ -718,7 +915,7 @@ function chooseEndpoint(id, field = endpointMode) {
     $("trip-feedback").textContent = "Choose different points for From and To.";
     return;
   }
-  endpointMode = null;
+  cancelMapTool();
   change(() => { state[field] = id; });
   StreetMap.revealEndpoints([state.originId, state.destinationId]);
   syncTripControls();
@@ -733,20 +930,18 @@ function syncTripControls() {
     }
     mapPickButtons.get(field)?.setAttribute("aria-pressed", String(endpointMode === field));
   }
-  $("trip-mode").textContent = laneDraft
-    ? laneDraft.options.length ? "Lane stretch · review the selected junctions."
-      : `Lane stretch · pick ${laneDraft.startId ? "End" : "Start"} on the map.`
-    : endpointMode
-    ? `Next map click sets ${endpointMode === "originId" ? "From" : "To"}. Choose a marked street junction.`
-    : draftStop !== null ? `Next map click sets the bus ${STOP_LABELS[draftStop].toLowerCase()} stop.` : "";
+  $("trip-mode").textContent = endpointMode
+    ? `Next map click sets ${endpointMode === "originId" ? "From" : "To"}. Choose a marked street junction.` : "";
   $("trip-controls").closest(".map-card").classList.toggle("picking-endpoint", mapPicking());
   StreetMap.showPicks(mapPicking());
+  syncMapTools();
 }
 
 function createEndpointPicker(field, label) {
   const group = el("div", { class: "endpoint-control" });
   const input = el("input", {
-    id: field, type: "search", autocomplete: "off", placeholder: "Search places",
+    id: field, type: "search", autocomplete: "off",
+    placeholder: field === "originId" ? "Choose a starting point" : "Choose a destination",
     "aria-controls": `${field}-matches`, "aria-expanded": "false"
   });
   const matches = el("ul", { class: "endpoint-matches", id: `${field}-matches`, hidden: "" });
@@ -760,7 +955,7 @@ function createEndpointPicker(field, label) {
   const commit = id => {
     hide();
     chooseEndpoint(id, field);
-    input.value = endpoints.get(state[field]).name;
+    input.value = endpoints.get(state[field])?.name ?? "";
   };
   const showMatches = (query = "") => {
     matches.replaceChildren();
@@ -788,7 +983,7 @@ function createEndpointPicker(field, label) {
   input.addEventListener("focus", () => { input.select(); showMatches(); });
   input.addEventListener("input", () => showMatches(input.value));
   input.addEventListener("keydown", event => {
-    if (event.key === "Escape") { hide(); input.value = endpoints.get(state[field]).name; }
+    if (event.key === "Escape") { hide(); input.value = endpoints.get(state[field])?.name ?? ""; }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       matches.querySelector("button")?.focus();
@@ -802,59 +997,62 @@ function createEndpointPicker(field, label) {
   group.addEventListener("focusout", event => {
     if (!group.contains(event.relatedTarget)) {
       hide();
-      input.value = endpoints.get(state[field]).name;
+      input.value = endpoints.get(state[field])?.name ?? "";
     }
   });
   mapButton.addEventListener("click", () => {
     hide();
-    closeLaneDraft();
-    if (draftStop !== null) {
-      draftStop = null;
-      updateBusDraft();
-    }
-    endpointMode = endpointMode === field ? null : field;
+    const next = endpointMode === field ? null : field;
+    cancelMapTool();
+    endpointMode = next;
     $("trip-feedback").textContent = "";
-    syncTripControls();
+    render();
   });
   group.append(el("label", { for: field }, label), input, mapButton, matches);
   return group;
 }
 
-function renderPreset() {
-  const area = $("preset-area");
-  const demo = network.demo || network.defaults || { closureRoadId: "wash_mid" };
-  if (network.demo || network.defaults) {
-    endpoints = new Map([
-      ...network.locations, ...network.busStops, ...network.intersections, ...(network.streetPicks || [])
-    ].map(point => [point.id, point]));
-    for (const point of junctions) endpoints.set(point.id, point);
-    for (const [field, label] of endpointFields) {
-      state[field] = demo[field];
-      $("trip-controls").append(createEndpointPicker(field, label));
-    }
+function setupEndpointPickers() {
+  endpoints = new Map([
+    ...(network.locations || []), ...(network.busStops || []), ...network.intersections, ...(network.streetPicks || [])
+  ].map(point => [point.id, point]));
+  for (const point of junctions) endpoints.set(point.id, point);
+  if (!CONFIG.useMock) {
+    for (const [field, label] of endpointFields) $("trip-controls").append(createEndpointPicker(field, label));
   }
-  if (!roadById(demo.closureRoadId)) return;
-  const btn = el("button", { type: "button" }, "Demo: HackPrinceton Let-Out");
-  btn.title = `Restore the Princeton Station trip and close ${roadName(demo.closureRoadId)}`;
-  btn.addEventListener("click", () => {
-    closeLaneDraft();
-    endpointMode = null;
-    selected = { type: "road", id: demo.closureRoadId };
-    change(() => {
-      restore(emptyState());
-      state.originId = demo.originId ?? null;
-      state.destinationId = demo.destinationId ?? null;
-      state.closed.add(demo.closureRoadId);
-    });
+}
+
+function speedEditDetails() {
+  const limits = new Map();
+  return state.speedStretches.map(edit => {
+    const previousLimits = new Set();
+    for (const id of edit.roadIds) {
+      const previous = limits.get(id) ?? roadResult("baseline", id)?.speedLimitMph ??
+        roadResult("scenario", id)?.originalSpeedLimitMph;
+      if (previous != null) previousLimits.add(previous);
+      limits.set(id, edit.speedLimitMph);
+    }
+    return {
+      ...edit,
+      startNodeId: endpointNode(edit.startId),
+      endNodeId: endpointNode(edit.endId),
+      startName: endpoints.get(edit.startId).name,
+      endName: endpoints.get(edit.endId).name,
+      street: roadName(edit.roadIds[0]).split(" (")[0],
+      previousLimits: [...previousLimits].sort((a, b) => a - b)
+    };
   });
-  area.append(btn);
 }
 
 function render() {
+  if (Number($("trip-demand").value) !== state.tripDemand) $("trip-demand").value = state.tripDemand;
   syncTripControls();
-  renderMap();
+  const laneEdits = laneMarkings();
+  renderMap(laneEdits);
   renderSchematicCustomBuses();
-  StreetMap.render({ state, selected, colorKey: roadColorKey, routeIds: activeRouteRoads(), trafficIds: trafficRoadIds(), focusedBusId, customRoutes, busServices: result?.scenario.busRoutes || [] });
+  StreetMap.render({ state, selected, colorKey: roadColorKey, routeIds: activeRouteRoads(),
+    trafficIds: trafficRoadIds(), focusedBusId, customRoutes, busServices: result?.scenario.busRoutes || [],
+    speedEdits: speedEditDetails(), laneEdits });
   renderSelected();
   renderBus();
   renderChanges();
@@ -867,6 +1065,36 @@ let cars = [];
 let buses = [];
 let lastFrame = null;
 
+function schematicItinerary(roadIds, origin, signals) {
+  const legs = [];
+  let node = origin, duration = 0, distance = 0;
+  for (const id of roadIds) {
+    const road = roadById(id), geo = geometry[id];
+    if (!road || !geo || (node !== road.from && node !== road.to)) return { legs: [], duration: 0 };
+    const forward = road.from === node;
+    const from = forward ? geo.p1 : geo.p2, to = forward ? geo.p2 : geo.p1;
+    node = forward ? road.to : road.from;
+    if (from.x === to.x && from.y === to.y) continue;
+    const length = StreetMap.roadDistance(road);
+    const seconds = StreetMap.vehicleLegSeconds(length, roadResults.scenario?.get(id), road, forward);
+    legs.push({ from, to, start: duration, seconds });
+    duration += seconds;
+    duration += StreetMap.redLightSeconds(signals, node, road, duration);
+    distance += length;
+  }
+  return { legs, duration, distance };
+}
+
+function schematicPosition(vehicle, dt) {
+  const { legs, duration } = vehicle;
+  const elapsed = vehicle.elapsed = (vehicle.elapsed + dt) % duration;
+  let i = 0;
+  while (i < legs.length - 1 && legs[i + 1].start <= elapsed) i++;
+  const { from, to, start, seconds } = legs[i];
+  const t = Math.min(1, (elapsed - start) / seconds);
+  return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+}
+
 function rebuildCars() {
   StreetMap.rebuildCars(result, $("animate-cars").checked, endpointNode(state.originId));
   const layer = $("car-layer");
@@ -874,36 +1102,24 @@ function rebuildCars() {
   cars = [];
   buses = [];
   if (!result) return;
+  const signals = StreetMap.signalStops(result.scenario.signals);
   for (const service of result.scenario.busRoutes || []) {
     if (!service.operating) continue;
     const route = busRoutes().find(r => r.id === service.id);
     if (!route) continue;
-    const points = service.nodeIds.map(id => nodePoints[id]);
+    const itinerary = schematicItinerary(service.roadIds, service.nodeIds[0], signals);
+    if (!itinerary.duration) continue;
     const marker = svgEl("g", { class: "schematic-bus", style: `color: ${route.color}` });
     marker.append(svgEl("rect", { x: -8, y: -5, width: 16, height: 10, rx: 2 }),
       svgEl("rect", { x: -5, y: -3, width: 10, height: 5, rx: 1, class: "bus-window" }));
     layer.append(marker);
-    buses.push({ marker, points, progress: 0 });
+    buses.push({ marker, ...itinerary, elapsed: 0 });
   }
   if (!$("animate-cars").checked) return;
   for (const route of result.scenario.carRoutes || []) {
-    const legs = [];
-    let node = endpointNode(state.originId), duration = 0;
-    for (const id of route.roadIds) {
-      const road = roadById(id), geo = geometry[id];
-      if (!road || !geo) break;
-      const forward = road.from === node;
-      const from = forward ? geo.p1 : geo.p2, to = forward ? geo.p2 : geo.p1;
-      node = forward ? road.to : road.from;
-      const length = Math.hypot(to.x - from.x, to.y - from.y);
-      if (!length) continue;
-      const ratio = roadResult("scenario", id)?.congestionRatio || 0;
-      const seconds = length / 24 * Math.min(4, 1 + 0.15 * ratio ** 4);
-      legs.push({ from, to, start: duration, seconds });
-      duration += seconds;
-    }
+    const { legs, duration, distance } = schematicItinerary(route.roadIds, endpointNode(state.originId), signals);
     if (!duration) continue;
-    const count = Math.max(2, Math.min(16, Math.ceil(duration / 3)));
+    const count = Math.max(2, Math.min(16, Math.ceil(distance / 220)));
     for (let i = 0; i < count; i++) {
       const dot = svgEl("circle", { class: "car", r: 4 });
       layer.append(dot);
@@ -913,42 +1129,103 @@ function rebuildCars() {
 }
 
 function animate(time) {
-  const dt = lastFrame === null ? 0 : (time - lastFrame) / 1000;
+  const dt = lastFrame === null ? 0 : (time - lastFrame) / 1000 * StreetMap.playbackRate;
   lastFrame = time;
   if ($("schematic-view").hidden) {
     requestAnimationFrame(animate);
     return;
   }
   for (const car of cars) {
-    car.elapsed = (car.elapsed + dt) % car.duration;
-    let i = 0;
-    while (i < car.legs.length - 1 && car.legs[i + 1].start <= car.elapsed) i++;
-    const { from, to, start, seconds } = car.legs[i];
-    const t = (car.elapsed - start) / seconds;
-    car.dot.setAttribute("cx", from.x + (to.x - from.x) * t);
-    car.dot.setAttribute("cy", from.y + (to.y - from.y) * t);
+    const { x, y } = schematicPosition(car, reducedMotion ? 0 : dt);
+    car.dot.setAttribute("cx", x);
+    car.dot.setAttribute("cy", y);
     const fade = Math.min(0.65, car.duration * 0.15);
     car.dot.setAttribute("opacity", Math.min(1, car.elapsed / fade, (car.duration - car.elapsed) / fade));
   }
   for (const bus of buses) {
-    const segments = bus.points.length - 1;
-    if (!reducedMotion) bus.progress = (bus.progress + dt * 0.42) % segments;
-    const index = Math.floor(bus.progress), t = bus.progress - index;
-    const a = bus.points[index], b = bus.points[index + 1];
-    bus.marker.setAttribute("transform", `translate(${a.x + (b.x - a.x) * t} ${a.y + (b.y - a.y) * t})`);
+    const { x, y } = schematicPosition(bus, reducedMotion ? 0 : dt);
+    bus.marker.setAttribute("transform", `translate(${x} ${y})`);
   }
   requestAnimationFrame(animate);
 }
 
 // ---- User actions ----
+function syncMapTools() {
+  for (const button of document.querySelectorAll("[data-map-tool]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.mapTool === activeTool));
+  }
+  $("map-tool-context").hidden = !activeTool;
+  $("bus-tool").hidden = activeTool !== "bus";
+  $("single-road-lane").hidden = activeTool !== "lane" || singleRoadLane || !laneDraft;
+  let instruction = "";
+  if (activeTool === "signal") instruction = selected ? "Set the signal or pick another intersection." : "Pick an intersection.";
+  if (activeTool === "closure") instruction = selected ? "Review this road segment or pick another." : "Pick a road segment to close.";
+  if (singleRoadLane) instruction = selected ? "Set the extra lanes for this segment." : "Pick a road segment.";
+  if (laneDraft) instruction = laneDraft.options.length ? "Review the highlighted stretch."
+    : laneDraft.startId ? "Pick the end point." : "Pick the start point.";
+  if (activeTool === "bus") {
+    instruction = draftStop !== null ? `Pick stop ${draftStop + 1}.`
+      : draft ? "Review the shuttle path." : "Manage your saved routes.";
+  }
+  $("map-tool-instruction").textContent = instruction;
+}
+
+function clearRoadEditFocus() {
+  if (focusedRoadEdit === null) return;
+  focusedRoadEdit = null;
+  StreetMap.previewLane([], []);
+}
+
+function cancelMapTool() {
+  clearRoadEditFocus();
+  activeTool = null;
+  endpointMode = null;
+  singleRoadLane = false;
+  selected = null;
+  closeLaneDraft();
+  if (draft) closeBusDraft();
+}
+
+function activateTool(tool, route) {
+  cancelMapTool();
+  activeTool = tool;
+  syncMapTools();
+  if (tool === "bus" || tool === "lane" || tool === "speed") showView("street");
+  if (tool === "bus") startBusDraft(route);
+  if (tool === "lane" || tool === "speed") startLaneDraft(tool);
+  render();
+}
+
+function setupMapTools() {
+  for (const button of document.querySelectorAll("[data-map-tool]")) {
+    const tool = button.dataset.mapTool;
+    button.disabled = ["bus", "speed", "lane"].includes(tool) &&
+      (CONFIG.useMock || !junctions.length || !StreetMap.isReady());
+    button.onclick = () => activateTool(tool);
+  }
+  $("cancel-map-tool").onclick = () => { cancelMapTool(); render(); };
+  $("single-road-lane").onclick = () => {
+    singleRoadLane = true;
+    closeLaneDraft();
+    render();
+  };
+}
+
 function select(type, id) {
-  if (mapPicking() && type === "node") { pickMapPoint(id); return; }
+  if (mapPicking() && activeTool !== "signal") {
+    if (type === "node") pickMapPoint(id);
+    return;
+  }
+  if (!activeTool) activeTool = type === "node" ? "signal" : "closure";
+  if ((activeTool === "signal" && type !== "node") ||
+      (pickingRoad() && type !== "road") ||
+      (activeTool !== "signal" && !pickingRoad())) return;
   selected = { type, id };
   render();
 }
 
 function emptyState() {
-  return { closed: new Set(), lanes: {}, laneStretches: [], signals: new Map(), busRoutes: new Set(), busPercent: DEFAULT_BUS_PERCENT };
+  return { closed: new Set(), lanes: {}, laneStretches: [], speedStretches: [], signals: new Map(), busRoutes: new Set(), busPercent: DEFAULT_BUS_PERCENT };
 }
 
 // Apply a change to the state, then re-run the simulation.
@@ -965,16 +1242,17 @@ let recommendationVersion = 0;
 function invalidateRecommendations() {
   recommendationVersion++;
   $("recommendations").replaceChildren();
-  $("recommend").disabled = CONFIG.useMock;
 }
 
 function applyScenario(scenario) {
   restore({
+    tripDemand: scenario.tripDemand ?? state.tripDemand,
     originId: scenario.originId,
     destinationId: scenario.destinationId,
     closed: new Set(scenario.closedRoadIds),
     lanes: { ...scenario.extraLanesByRoadId },
     laneStretches: [...(scenario.laneStretches || [])],
+    speedStretches: [...(scenario.speedStretches || [])],
     signals: new Map(scenario.signals.map(signal => [signal.intersectionId, signal.mainGreenShare])),
     busRoutes: new Set(scenario.enabledBusRouteIds.filter(id => customRoutes.some(route => route.id === id))),
     busPercent: scenario.busShiftPercent
@@ -1030,9 +1308,7 @@ async function findBestFix() {
 }
 
 function resetScenario() {
-  closeLaneDraft();
-  selected = null;
-  endpointMode = null;
+  cancelMapTool();
   change(() => restore(emptyState()));
 }
 
@@ -1041,12 +1317,14 @@ async function runSimulation() {
   const myRequest = ++requestCounter;
   $("trip-feedback").textContent = "";
   render(); // show the change right away
+  if (!hasTrip()) return;
   try {
     const data = await fetchSimulation(currentScenario());
     if (myRequest !== requestCounter) return; // a newer request has started
     result = data;
     roadResults = Object.fromEntries(["baseline", "scenario"].map(key => [key, new Map(data[key].roads.map(road => [road.id, road]))]));
     confirmedState = snapshot();
+    $("recommend").disabled = CONFIG.useMock;
     if ((network.demo || network.defaults) && data.scenario.completedCarTrips === 0) {
       $("trip-feedback").textContent = "No valid car route between these points with the current closures, street directions and access rules.";
     }
@@ -1079,14 +1357,18 @@ function setStatus(text, isError = false) {
 // ---- Start ----
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 async function start() {
+  const demand = $("trip-demand");
+  $("demand-form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (demand.valueAsNumber === state.tripDemand) return;
+    change(() => { state.tripDemand = demand.valueAsNumber; });
+  });
   $("reset").addEventListener("click", resetScenario);
   document.addEventListener("keydown", event => {
-    if (event.key !== "Escape" || (!laneDraft && !mapPicking())) return;
-    if (laneDraft) closeLaneDraft();
-    else if (draftStop !== null) closeBusDraft();
-    else { endpointMode = null; syncTripControls(); }
+    if (event.key !== "Escape" || (!activeTool && !endpointMode)) return;
+    cancelMapTool();
+    render();
   });
-  $("recommend").disabled = CONFIG.useMock;
   $("recommend").addEventListener("click", findBestFix);
   if (CONFIG.useMock) $("recommendations").textContent = "Trip selection and recommendations require the real backend.";
   const animateBox = $("animate-cars");
@@ -1099,7 +1381,13 @@ async function start() {
     setStatus(`Could not load the road network: ${err.message}`, true);
     return;
   }
+  state.tripDemand = network.tripDemand?.default ?? 100;
+  demand.max = network.tripDemand?.max ?? 1000;
   roadsById = new Map([...network.roads, ...(network.pickRoads || [])].map(road => [road.id, road]));
+  for (const { id, parentId } of network.pickRoads || []) {
+    if (!roadParts.has(parentId)) roadParts.set(parentId, []);
+    roadParts.get(parentId).push(id);
+  }
   nodesById = new Map(network.intersections.map(node => [node.id, node]));
   signalIds = new Set(network.signalIntersections || []);
   junctions = mapJunctions();
@@ -1110,15 +1398,17 @@ async function start() {
     if (!ids.has(road.from)) networkProblems.push(`${road.id}: unknown from "${road.from}"`);
     if (!ids.has(road.to)) networkProblems.push(`${road.id}: unknown to "${road.to}"`);
   }
-  renderPreset();
+  setupEndpointPickers();
   loadCustomRoutes();
   setupBusEditor();
   drawMap();
   setupViews();
   setupLaneMap();
+  setupMapTools();
   $("coverage-view").hidden = !network.coverage || !StreetMap.isReady();
   $("coverage-view").onclick = () => { showView("street"); StreetMap.showCoverage(); };
-  runSimulation();
+  setStatus(statusText());
+  render();
   requestAnimationFrame(animate);
 }
 
@@ -1130,7 +1420,6 @@ function showView(view) {
   $("street-view").hidden = !street;
   $("schematic-view").hidden = street;
   $("view-street").setAttribute("aria-pressed", String(street));
-  $("view-schematic").setAttribute("aria-pressed", String(!street));
   $("view-street").disabled = !StreetMap.isReady();
   if (street) StreetMap.refreshSize();
 }
@@ -1146,7 +1435,8 @@ function setupViews() {
     onSelectRoad: id => select("road", id),
     onSelectNode: id => select("node", id),
     onSelectEndpoint: id => pickMapPoint(id),
-    picking: mapPicking
+    picking: mapPicking,
+    pickingRoad
   };
   const onTilesFailed = reason => {
     showMapNote(`${reason} Showing the schematic view. Try "Street map" again when you're back online.`);
@@ -1159,7 +1449,6 @@ function setupViews() {
     console.error(err);
   }
   $("view-street").addEventListener("click", () => { showMapNote(""); showView("street"); });
-  $("view-schematic").addEventListener("click", () => showView("schematic"));
 
   if (!ok) {
     showMapNote("The street map couldn't load (no internet or Leaflet blocked). Showing the schematic view.");
@@ -1168,8 +1457,7 @@ function setupViews() {
   }
   const missing = StreetMap.missing();
   if (missing.length) showMapNote(`No street geometry yet for: ${missing.join(", ")}. Those roads appear only in the schematic view.`);
-  const wanted = new URLSearchParams(location.search).get("view");
-  showView(wanted === "schematic" ? "schematic" : "street");
+  showView("street");
 }
 
 start();

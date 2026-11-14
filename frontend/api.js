@@ -1,7 +1,6 @@
-// Talks to the backend, or to the mock files while the backend isn't ready.
-// To use Sizar's FastAPI server, set useMock to false (or open the page with ?api=real).
+// Use the local backend by default. The mock network is available with ?api=mock.
 const CONFIG = {
-  useMock: !new URLSearchParams(location.search).has("api"),
+  useMock: new URLSearchParams(location.search).get("api") === "mock",
   apiBase: "http://127.0.0.1:8000"
 };
 

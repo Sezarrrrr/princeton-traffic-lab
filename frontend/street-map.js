@@ -10,6 +10,8 @@ const StreetMap = (() => {
   const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
   const COLORS = { faster: "#19834d", slower: "#c53b32", unchanged: "#526778", closed: "#9aa1ad", empty: "#a9b0bb", accent: "#e77500" };
   const CAR_COLORS = ["#ffffff", "#f2f2f2", "#2b2f38", "#3a6fd8", "#c8372d", "#8a929e", "#e9c46a"];
+  const KM_PER_MILE = 1.609344;
+  const playbackRate = 3;
 
   let map = null;
   let initialBounds = null;
@@ -18,7 +20,9 @@ const StreetMap = (() => {
   const endpointPins = new Map();
   let importedRoads = [], importedHighlights, importedStyleKey;
   const importedBounds = new Map();
-  let coverageCircle, customLayer, previewLayer, lanePreview;
+  let coverageCircle, customLayer, previewLayer, lanePreview, speedEditsLayer, laneLabelsLayer;
+  let laneLabelsKey;
+  let speedEditsKey;
   let lookupRoads, lookupPoints, pointHandlers;
   let intersections = [], pickPoints = [], pickLayer, pickTooltip;
   const customPaths = new Map();
@@ -49,6 +53,35 @@ const StreetMap = (() => {
     const cum = [0];
     for (let i = 1; i < points.length; i++) cum.push(cum[i - 1] + meters(points[i - 1], points[i]));
     return { points, cum, length: cum[cum.length - 1] };
+  }
+  function vehicleLegSeconds(distanceMeters, roadResult, road, forward) {
+    const direction = forward ? "forward" : "backward";
+    const simulated = roadResult?.directions ? roadResult.directions[direction] : roadResult;
+    const limitKph = (simulated?.speedLimitMph ?? road.speedLimits?.[direction]?.mph ?? 25) * KM_PER_MILE;
+    const minutes = simulated?.travelMinutes ?? 0;
+    const minimumSeconds = distanceMeters * 3.6 / limitKph;
+    return Math.max(minutes * 60, minimumSeconds);
+  }
+
+  function signalStops(signals) {
+    return new Map((signals || []).map(signal => [signal.intersectionId, {
+      ...signal, phases: new Map(signal.approaches.map(approach => [approach.roadId, approach.phase]))
+    }]));
+  }
+
+  function redLightSeconds(signals, node, road, elapsed) {
+    const signal = signals.get(node);
+    const phase = signal?.phases.get(road.parentId ?? road.id);
+    if (!phase || !signal.cycleSeconds) return 0;
+    const mainGreen = signal.cycleSeconds * signal.mainGreenShare;
+    const position = elapsed % signal.cycleSeconds;
+    return phase === "main" ? (position < mainGreen ? 0 : signal.cycleSeconds - position)
+      : Math.max(0, mainGreen - position);
+  }
+
+  function roadDistance(road) {
+    const points = road.geometry || ROAD_GEOMETRY.roads[road.id];
+    return points ? measure(points).length : 0;
   }
   function pointAt(path, s) { // position and heading at distance s along the path
     const { points, cum } = path;
@@ -125,6 +158,9 @@ const StreetMap = (() => {
     map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
 
     const allPoints = [];
+    const speedPane = map.createPane("speed-edits");
+    speedPane.style.zIndex = 400;
+    speedPane.style.pointerEvents = "none";
     const roadPane = map.createPane("roads"); roadPane.style.zIndex = 410;
     const carPane = map.createPane("cars"); carPane.style.zIndex = 620; carPane.style.pointerEvents = "none";
     const labelPane = map.createPane("labels"); labelPane.style.zIndex = 630; labelPane.style.pointerEvents = "none";
@@ -132,6 +168,8 @@ const StreetMap = (() => {
     customLayer = L.layerGroup().addTo(map);
     previewLayer = L.layerGroup().addTo(map);
     lanePreview = L.layerGroup().addTo(map);
+    speedEditsLayer = L.layerGroup().addTo(map);
+    laneLabelsLayer = L.layerGroup().addTo(map);
     if (network.coverage) {
       const { center, radiusMeters } = network.coverage;
       coverageCircle = L.circle(center, { radius: radiusMeters, color: "#3c6596", weight: 2,
@@ -259,8 +297,8 @@ const StreetMap = (() => {
         }
       }
       if (pointsOnly) {
-        ctx.fillStyle = "#175f9b";
-        ctx.strokeStyle = "#fff";
+        ctx.fillStyle = "#ffcf91";
+        ctx.strokeStyle = "#a95622";
         ctx.lineWidth = 1;
         ctx.stroke();
         ctx.fill();
@@ -297,7 +335,7 @@ const StreetMap = (() => {
       return;
     }
     let best = 6, closest = null;
-    for (const node of intersections) {
+    for (const node of handlers.pickingRoad() ? [] : intersections) {
       const ll = endpointPositions.get(node.id);
       if (!ll) continue;
       const distance = map.latLngToContainerPoint(ll).distanceTo(point);
@@ -322,15 +360,6 @@ const StreetMap = (() => {
     }
   }
 
-  function routeGeometry(roadIds, nodeIds) {
-    return roadIds.flatMap((id, index) => {
-      const road = lookupRoads.get(id);
-      if (!road) return [];
-      const points = road.from === nodeIds[index] ? road.geometry : [...road.geometry].reverse();
-      return points.slice(index ? 1 : 0);
-    });
-  }
-
   function busPoint(layer, point, color, label, name) {
     const coordinates = endpointPositions.get(point.endpointId);
     if (!coordinates) return;
@@ -340,28 +369,103 @@ const StreetMap = (() => {
       .on("click", () => pointHandlers.onSelectEndpoint(point.endpointId)).addTo(layer);
   }
 
-  function previewBus(points, roadIds, color) {
+  function previewBus(points, legs, color) {
     if (!previewLayer) return;
     previewLayer.clearLayers();
-    for (const id of roadIds) {
+    for (const id of legs.flatMap(leg => leg.roadIds)) {
       L.polyline(lookupRoads.get(id).geometry, { color, weight: 6,
-        dashArray: "5 6", interactive: false }).addTo(previewLayer);
+        dashArray: "5 6", interactive: false, className: "bus-preview-path" }).addTo(previewLayer);
     }
     points.forEach((point, index) => busPoint(previewLayer, point, color,
-      index === 0 ? "S" : "E", index === 0 ? "Bus start stop" : "Bus end stop"));
+      index + 1, `Bus stop ${index + 1}`));
+  }
+
+  function renderSpeedEdits(edits) {
+    const key = JSON.stringify(edits);
+    if (key === speedEditsKey) return;
+    speedEditsKey = key;
+    speedEditsLayer.clearLayers();
+    for (const edit of edits) {
+      const roads = edit.roadIds.map(id => lookupRoads.get(id));
+      if (!roads.length || roads.some(road => !road?.geometry)) continue;
+
+      // A preview can return the reverse traversal for a one-way street.
+      // Join the ordered geometry from whichever boundary starts that traversal.
+      let node = lookupPoints.has(edit.startNodeId) &&
+        [roads[0].from, roads[0].to].includes(edit.startNodeId)
+        ? edit.startNodeId : edit.endNodeId;
+      const points = roads.flatMap((road, index) => {
+        const forward = road.from === node;
+        node = forward ? road.to : road.from;
+        return (forward ? road.geometry : [...road.geometry].reverse()).slice(index ? 1 : 0);
+      });
+      const path = measure(points);
+      if (!path.length) continue;
+      L.polyline(points, { pane: "speed-edits", className: "speed-edit-stretch", color: "#6943a0",
+        weight: 10, opacity: 0.7, dashArray: "6 4", interactive: false }).addTo(speedEditsLayer);
+
+      for (const [id, label] of [[edit.startNodeId, "Start"], [edit.endNodeId, "End"]]) {
+        const coordinates = endpointPositions.get(id);
+        if (!coordinates) continue;
+        L.marker(coordinates, {
+          title: `${label} of speed edit`, interactive: false, keyboard: false,
+          icon: L.divIcon({ className: "speed-edit-endpoint", html: label[0],
+            iconSize: [20, 20], iconAnchor: [10, 20] })
+        }).addTo(speedEditsLayer);
+      }
+
+      const title = `${edit.speedLimitMph} mph on ${edit.street}`;
+      const details = document.createElement("div");
+      details.className = "speed-edit-details";
+      const heading = document.createElement("strong");
+      heading.textContent = edit.street;
+      details.append(heading);
+      for (const line of [
+        `Start · ${edit.startName}`,
+        `End · ${edit.endName}`,
+        `Previous limit · ${edit.previousLimits.length ? edit.previousLimits.join(", ") + " mph" : "Pending simulation"}`,
+        `New limit · ${edit.speedLimitMph} mph`
+      ]) {
+        const row = document.createElement("div");
+        row.textContent = line;
+        details.append(row);
+      }
+      L.marker(pointAt(path, path.length / 2).latLng, {
+        title, alt: title, zIndexOffset: 200,
+        icon: L.divIcon({ className: "speed-edit-sign", html: `<span>${edit.speedLimitMph}</span><small>mph</small>`,
+          iconSize: [32, 36], iconAnchor: [16, 42] })
+      }).bindPopup(details).addTo(speedEditsLayer);
+    }
   }
 
   // ---- Update from state + results ----
   function render(ctx) {
     if (!ready) return;
-    const { state, selected, colorKey, routeIds, trafficIds, focusedBusId, customRoutes, busServices } = ctx;
+    const { state, selected, colorKey, routeIds, trafficIds, focusedBusId, customRoutes, busServices, speedEdits, laneEdits } = ctx;
+    renderSpeedEdits(speedEdits);
+    const labelKey = JSON.stringify(laneEdits.labels);
+    if (labelKey !== laneLabelsKey) {
+      laneLabelsKey = labelKey;
+      laneLabelsLayer.clearLayers();
+      for (const { roadIds, text } of laneEdits.labels) {
+        const paths = roadIds.map(id => lookupRoads.get(id)?.geometry).filter(Boolean).map(measure);
+        let distance = paths.reduce((total, path) => total + path.length, 0) / 2;
+        for (const path of paths) {
+          if (distance > path.length) { distance -= path.length; continue; }
+          if (path.length) L.tooltip({ permanent: true, direction: "center", className: "lane-count-label" })
+            .setLatLng(pointAt(path, distance).latLng).setContent(text).addTo(laneLabelsLayer);
+          break;
+        }
+      }
+    }
     if (importedHighlights) {
       const styled = [];
-      for (const id of new Set([...routeIds, ...trafficIds, selected?.id])) {
+      for (const id of new Set([...routeIds, ...trafficIds, ...laneEdits.counts.keys(), selected?.id])) {
         if (!lookupRoads.has(id)) continue;
         const key = colorKey(id);
-        if (key === "empty" && selected?.id !== id && !routeIds.has(id)) continue;
-        styled.push([id, key, routeIds.has(id), selected?.id === id]);
+        const lanes = laneEdits.counts.get(id) || 0;
+        if (key === "empty" && selected?.id !== id && !routeIds.has(id) && !lanes) continue;
+        styled.push([id, key, routeIds.has(id), selected?.id === id, lanes]);
       }
       const styleKey = JSON.stringify(styled);
       if (styleKey !== importedStyleKey) {
@@ -375,10 +479,15 @@ const StreetMap = (() => {
               className: onRoute ? "trip-path" : "" }).addTo(importedHighlights);
           }
         }
-        for (const [id, key, onRoute] of styled) {
-          L.polyline(lookupRoads.get(id).geometry, { ...opts, color: COLORS[key], weight: onRoute ? 5.5 : 3.5,
+        for (const [id, key, onRoute, , lanes] of styled) {
+          const points = lookupRoads.get(id).geometry;
+          L.polyline(points, { ...opts, color: COLORS[key], weight: (onRoute ? 5.5 : 3.5) + lanes * 2.5,
             dashArray: key === "closed" ? "5 6" : null,
             className: `traffic-road traffic-${key} traffic-${id}` }).addTo(importedHighlights);
+          if (lanes && key !== "closed") {
+            L.polyline(points, { ...opts, className: "lane-divider", color: "#fff",
+              weight: 1, opacity: 0.8, dashArray: "4 5" }).addTo(importedHighlights);
+          }
         }
       }
     }
@@ -405,11 +514,11 @@ const StreetMap = (() => {
           interactive: false, className: `bus-road-${route.id}` }).addTo(customLayer);
       }
       if (state.busRoutes.has(route.id) || focused) route.points.forEach((point, i) => busPoint(
-        customLayer, point, route.color, i === 0 ? "S" : "E", `${route.name} ${i === 0 ? "start" : "end"} stop`));
-      if (operating) customPaths.set(route.id, { route, path: measure(routeGeometry(ids, service.nodeIds)) });
+        customLayer, point, route.color, i + 1, `${route.name} · stop ${i + 1}`));
+      if (operating) customPaths.set(route.id, route);
     }
     for (const [field, letter] of [["originId", "A"], ["destinationId", "B"]]) {
-      const coordinates = endpointPositions.get(state[field]);
+      const coordinates = state.originId && state.destinationId && endpointPositions.get(state[field]);
       let pin = endpointPins.get(field);
       if (!coordinates) { pin?.remove(); continue; }
       if (!pin) {
@@ -426,7 +535,7 @@ const StreetMap = (() => {
 
   // Cars follow whole directed routes. Each road contributes its polyline
   // and a bounded visual speed derived from that road's own congestion.
-  function carItinerary(assignment, origin, roadTimes) {
+  function carItinerary(assignment, origin, roadTimes, signals) {
     const first = lookupRoads.get(assignment.roadIds[0]);
     let node = lookupPoints.has(origin) ? origin : first?.from;
     const legs = [];
@@ -439,10 +548,11 @@ const StreetMap = (() => {
       const path = measure(forward ? points : [...points].reverse());
       node = forward ? road.to : road.from;
       if (!path.length) continue;
-      const ratio = roadTimes.get(id)?.congestionRatio || 0;
-      const speed = 48 / Math.min(4, 1 + 0.15 * ratio ** 4);
+      const seconds = vehicleLegSeconds(path.length, roadTimes.get(id), road, forward);
+      const speed = path.length / seconds;
       legs.push({ path, start: duration, speed });
-      duration += path.length / speed;
+      duration += seconds;
+      duration += redLightSeconds(signals, node, road, duration);
       distance += path.length;
     }
     return { legs, duration, distance };
@@ -472,20 +582,20 @@ const StreetMap = (() => {
     cars = [];
     lastFrame = null;
     if (!result) return;
+    const signals = signalStops(result.scenario.signals);
+    const roadTimes = new Map(result.scenario.roads.map(road => [road.id, road]));
     for (const service of result.scenario.busRoutes || []) {
       if (!service.operating) continue;
-      const layer = customPaths.get(service.id);
-      if (!layer?.path.length) continue;
-      const { route, path } = layer;
-      addVehicle(busIcon(route.color), { legs: [{ path, start: 0, speed: 45 }],
-        duration: path.length / 45 }, path.length / 45 * 0.15, true);
+      const route = customPaths.get(service.id);
+      if (!route) continue;
+      const itinerary = carItinerary(service, service.nodeIds[0], roadTimes, signals);
+      if (itinerary?.duration) addVehicle(busIcon(route.color), itinerary, itinerary.duration * 0.15, true);
     }
     if (enabled) {
-      const roadTimes = new Map(result.scenario.roads.map(road => [road.id, road]));
       let color = 0;
       for (const assignment of result.scenario.carRoutes || []) {
         if (!assignment.carTrips || !assignment.roadIds.length) continue;
-        const itinerary = carItinerary(assignment, assignment.nodeIds?.[0] || originNodeId, roadTimes);
+        const itinerary = carItinerary(assignment, assignment.nodeIds?.[0] || originNodeId, roadTimes, signals);
         if (!itinerary?.duration) continue;
         const count = Math.max(2, Math.min(20, Math.ceil(itinerary.distance / 220)));
         for (let i = 0; i < count; i++) {
@@ -515,7 +625,7 @@ const StreetMap = (() => {
   }
 
   function animate(time) {
-    const elapsed = lastFrame === null ? 0 : (time - lastFrame) / 1000;
+    const elapsed = lastFrame === null ? 0 : (time - lastFrame) / 1000 * playbackRate;
     lastFrame = time;
     if (cars.length && !document.getElementById("street-view").hidden) {
       for (const car of cars) {
@@ -526,23 +636,32 @@ const StreetMap = (() => {
     requestAnimationFrame(animate);
   }
 
-  return {
-    init, render, rebuildCars, previewBus,
-    previewLane: (points, roadIds) => {
+  function previewLane(points, roadIds, focused = false) {
       if (!lanePreview) return;
       lanePreview.clearLayers();
       for (const id of roadIds) {
-        L.polyline(lookupRoads.get(id).geometry, { color: "#702e9d", opacity: 0.85,
-          weight: 7, dashArray: "6 5", interactive: false, className: "lane-preview-path" }).addTo(lanePreview);
+        const options = focused ? { weight: 14, opacity: 0.65, pane: "speed-edits" }
+          : { weight: 7, opacity: 0.85, dashArray: "6 5" };
+        L.polyline(lookupRoads.get(id).geometry, { color: "#702e9d", ...options,
+          interactive: false, className: focused ? "road-edit-focus" : "lane-preview-path" }).addTo(lanePreview);
       }
       points.forEach((endpointId, index) => {
         const point = endpointPositions.get(endpointId);
         if (!point) return;
         const icon = L.divIcon({ className: "lane-preview-pin",
           html: index === 0 ? "S" : "E", iconSize: [22, 22], iconAnchor: [11, 22] });
-        L.marker(point, { icon, title: index === 0 ? "Lane start" : "Lane end",
+        L.marker(point, { icon, title: index === 0 ? "Street stretch start" : "Street stretch end",
           interactive: false, keyboard: false }).addTo(lanePreview);
       });
+  }
+
+  return {
+    init, render, rebuildCars, previewBus, previewLane, roadDistance, vehicleLegSeconds, playbackRate, signalStops, redLightSeconds,
+    focusRoadEdit(points, roadIds) {
+      if (!ready) return;
+      previewLane(points, roadIds, true);
+      const bounds = L.latLngBounds(roadIds.flatMap(id => lookupRoads.get(id).geometry));
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [56, 56], maxZoom: 17 });
     },
     showPicks: active => {
       if (!pickLayer) return;

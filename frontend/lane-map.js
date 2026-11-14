@@ -10,14 +10,26 @@ function closeLaneDraft() {
   syncTripControls();
 }
 
-function redrawLaneDraft() {
+function redrawLaneDraft(resetLimit = false) {
   const option = laneDraft.options[Number($("lane-options").value)];
+  const speedMode = laneDraft.mode === "speed";
+  const input = $("speed-limit-mph");
+  $("speed-limit-label").hidden = !speedMode || !option;
+  if (speedMode && option && resetLimit) input.value = Math.round(option.speedLimitsMph[0]);
   StreetMap.previewLane([laneDraft.startId, laneDraft.endId].filter(Boolean), option?.roadIds || []);
-  $("confirm-lane").disabled = !option;
+  $("confirm-lane").disabled = !option || (speedMode && !validSpeedLimit());
   if (option) {
-    $("lane-status").textContent = `${option.street} · ${option.distanceMeters} m · ${option.roadIds.length} segments. Confirm to add one lane.`;
+    const limitInfo = speedMode
+      ? `Original limits: ${option.speedLimitsMph.map(mph => Number(mph.toFixed(1))).join(", ")} mph.`
+      : "Adds capacity. The speed limit and free-flow time stay the same.";
+    $("lane-status").textContent = `${option.street} · ${option.distanceMeters} m · ${option.roadIds.length} segments. ${limitInfo}`;
   }
   syncTripControls();
+}
+
+function validSpeedLimit() {
+  const input = $("speed-limit-mph");
+  return input.value !== "" && input.checkValidity();
 }
 
 async function pickLanePoint(id) {
@@ -25,7 +37,6 @@ async function pickLanePoint(id) {
     laneDraft.startId = id;
     $("lane-status").textContent = `Start · ${endpoints.get(id).name}. Pick the end on the same street.`;
     redrawLaneDraft();
-    syncTripControls();
     return;
   }
 
@@ -35,7 +46,6 @@ async function pickLanePoint(id) {
   $("lane-options-label").hidden = true;
   $("lane-status").textContent = "Finding a connected stretch…";
   redrawLaneDraft();
-  syncTripControls();
   try {
     const data = await postScenario("lane-preview", {
       startId: laneDraft.startId, endId: id, closedRoadIds: [...state.closed]
@@ -49,36 +59,41 @@ async function pickLanePoint(id) {
     $("lane-options").replaceChildren(...data.options.map((option, index) =>
       el("option", { value: index }, `${option.street} · ${option.distanceMeters} m · option ${index + 1}`)));
     $("lane-options-label").hidden = data.options.length === 1;
-    redrawLaneDraft();
+    redrawLaneDraft(true);
   } catch (error) {
     if (version === laneVersion) $("lane-status").textContent = `${error.message} Pick another end point.`;
   }
 }
 
+function startLaneDraft(mode) {
+  laneDraft = { mode, startId: null, endId: null, options: [] };
+  $("lane-editor").hidden = false;
+  $("lane-options-label").hidden = true;
+  $("lane-options").replaceChildren();
+  $("speed-limit-label").hidden = true;
+  $("confirm-lane").disabled = true;
+  $("confirm-lane").textContent = mode === "speed" ? "Apply speed limit" : "Confirm extra lane";
+  $("lane-status").textContent = "";
+  syncTripControls();
+}
+
 function setupLaneMap() {
-  $("add-lane-map").hidden = CONFIG.useMock || !junctions.length || !StreetMap.isReady();
-  $("add-lane-map").onclick = () => {
-    if (draft) closeBusDraft();
-    endpointMode = null;
-    closeLaneDraft();
-    laneDraft = { startId: null, endId: null, options: [] };
-    $("lane-editor").hidden = false;
-    $("lane-options-label").hidden = true;
-    $("lane-options").replaceChildren();
-    $("confirm-lane").disabled = true;
-    $("lane-status").textContent = "Pick the start of the lane stretch.";
-    showView("street");
-    $("lane-editor").scrollIntoView({ block: "nearest" });
-    syncTripControls();
-  };
-  $("lane-options").onchange = redrawLaneDraft;
-  $("cancel-lane").onclick = closeLaneDraft;
+  $("lane-options").onchange = () => redrawLaneDraft(true);
+  $("speed-limit-mph").oninput = () => { $("confirm-lane").disabled = !validSpeedLimit(); };
   $("confirm-lane").onclick = () => {
     const option = laneDraft.options[Number($("lane-options").value)];
     if (!option) return;
-    const { startId, endId } = laneDraft;
+    const { startId, endId, mode } = laneDraft;
     const { roadIds } = option;
-    closeLaneDraft();
-    change(() => state.laneStretches.push({ startId, endId, roadIds }));
+    if (mode === "speed" && !validSpeedLimit()) return;
+    const speedLimitMph = $("speed-limit-mph").valueAsNumber;
+    cancelMapTool();
+    change(() => {
+      if (mode === "speed") {
+        state.speedStretches.push({ startId, endId, roadIds, speedLimitMph });
+      } else {
+        state.laneStretches.push({ startId, endId, roadIds });
+      }
+    });
   };
 }
