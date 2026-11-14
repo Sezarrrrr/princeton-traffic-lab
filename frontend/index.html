@@ -15,7 +15,8 @@
       <h1>Princeton Traffic Lab</h1>
       <p id="status" class="status" role="status">Loading…</p>
     </div>
-    <p class="subtitle">Click a road to close it or add lanes. Click an orange-ringed intersection to add a signal. Combine changes and compare with the original scenario.</p>
+    <p class="subtitle core-only">Click a road to close it or add lanes. Click an orange-ringed intersection to add a signal. Combine changes and compare with the original scenario.</p>
+    <p class="subtitle lab-only">Click a road to close it, add lanes, or change its speed and direction. Click an intersection to switch between signals, stop signs and roundabouts and tune signal timing. Add your own trips between any two points.</p>
   </header>
 
   <main>
@@ -44,7 +45,12 @@
         <span><i class="swatch closed"></i>Closed</span>
         <span><i class="swatch empty"></i>No car trips</span>
         <span><i class="swatch bus"></i>Bus route</span>
-        <span><i class="dot signal-dot"></i>Signal possible</span>
+        <span class="core-only"><i class="dot signal-dot"></i>Signal possible</span>
+        <span class="lab-only"><i class="swatch nocar"></i>No car access</span>
+        <span class="lab-only"><i class="lg-ctl lg-signal"></i>Signal</span>
+        <span class="lab-only"><i class="lg-ctl lg-stop"></i>Stop sign</span>
+        <span class="lab-only"><i class="lg-ctl lg-roundabout"></i>Roundabout</span>
+        <span class="lab-only"><i class="swatch route"></i>Selected trip</span>
       </div>
       <p class="note">Road shapes follow real streets (OpenStreetMap). Badges show car trips (change vs. original). Cars are a visual aid; the numbers come from the simulation. All traffic numbers are simulation assumptions.</p>
     </section>
@@ -65,6 +71,11 @@
       </section>
 
       <section class="card">
+        <h2>Trips</h2>
+        <div id="trips-body"></div>
+      </section>
+
+      <section class="card">
         <h2>Your changes</h2>
         <ul id="changes" class="changes"></ul>
         <button id="reset" type="button">Reset</button>
@@ -77,8 +88,13 @@
 
       <section class="card">
         <h2>Where the trips went</h2>
-        <p class="muted small">Car trips per road, original → modified. Only roads that changed are listed.</p>
+        <p class="muted small">Car trips per road (both directions), original → modified. Only roads that changed are listed.</p>
         <ul id="shifts" class="shifts"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Assumptions</h2>
+        <div id="settings-body"></div>
       </section>
     </aside>
   </main>
@@ -86,10 +102,11 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="geo/princeton-geo.js"></script>
-  <script src="mock/network.js"></script>
-  <script src="mock/simulate.js"></script>
+  <script src="geo/princeton-network.js"></script>
+  <script src="sim/engine.js"></script>
   <script src="api.js"></script>
   <script src="street-map.js"></script>
+  <script src="lab-ui.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
