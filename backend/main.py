@@ -1,3 +1,5 @@
+from collections import deque
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -15,6 +17,9 @@ ROUTE_A = ("wash_north", "wash_mid", "wash_south", "faculty_rd", "alex_station")
 ROUTE_B = ("nassau_west", "nassau_mercer", "alex_north")
 BASELINE_TRIPS = {ROUTE_A: 120, ROUTE_B: 80}
 TOTAL_TRIPS = sum(BASELINE_TRIPS.values())
+ORIGIN = "int_nassau_wash"
+DEFAULT_DESTINATION = "int_alex_univ"
+DESTINATION_IDS = (DEFAULT_DESTINATION, "int_prospect_olden")
 
 
 class SimulationRequest(BaseModel):
@@ -22,6 +27,7 @@ class SimulationRequest(BaseModel):
     extraLanesByRoadId: dict[str, int] = Field(default_factory=dict)
     signals: list[dict] = Field(default_factory=list)
     busShiftPercent: int = 0
+    destinationId: str = DEFAULT_DESTINATION
 
 
 @app.get("/api/health")
@@ -31,13 +37,40 @@ def health_check():
 
 @app.get("/api/network")
 def get_network():
-    return PRINCETON_NETWORK
+    return {**PRINCETON_NETWORK, "destinationIds": DESTINATION_IDS}
 
 
-def run_simulation(closed_roads, extra_lanes):
-    open_routes = [
-        route for route in BASELINE_TRIPS if closed_roads.isdisjoint(route)
-    ]
+def find_route(destination_id, closed_roads):
+    neighbors = {}
+    for road in PRINCETON_NETWORK["roads"]:
+        if road["id"] in closed_roads or not road.get("carAccess", True):
+            continue
+        start, end = road["from"], road["to"]
+        neighbors.setdefault(start, []).append((end, road["id"]))
+        if road.get("twoWay", False):
+            neighbors.setdefault(end, []).append((start, road["id"]))
+
+    pending = deque([(ORIGIN, ())])
+    visited = {ORIGIN}
+    while pending:
+        intersection_id, route = pending.popleft()
+        if intersection_id == destination_id:
+            return route
+        for next_id, road_id in neighbors.get(intersection_id, ()):
+            if next_id not in visited:
+                visited.add(next_id)
+                pending.append((next_id, route + (road_id,)))
+    return None
+
+
+def run_simulation(closed_roads, extra_lanes, destination_id=DEFAULT_DESTINATION):
+    if destination_id == DEFAULT_DESTINATION:
+        open_routes = [
+            route for route in BASELINE_TRIPS if closed_roads.isdisjoint(route)
+        ]
+    else:
+        route = find_route(destination_id, closed_roads)
+        open_routes = [route] if route is not None else []
     trips_by_road = {road["id"]: 0 for road in PRINCETON_NETWORK["roads"]}
     completed_trips = 0
 
@@ -94,7 +127,10 @@ def simulate(request: SimulationRequest):
     if request.signals or request.busShiftPercent:
         raise HTTPException(status_code=422, detail="Signals and bus service are not supported yet")
 
+    if request.destinationId not in DESTINATION_IDS:
+        raise HTTPException(status_code=422, detail="Unknown destination ID")
+
     return {
-        "baseline": run_simulation(set(), {}),
-        "scenario": run_simulation(closed_roads, extra_lanes),
+        "baseline": run_simulation(set(), {}, request.destinationId),
+        "scenario": run_simulation(closed_roads, extra_lanes, request.destinationId),
     }

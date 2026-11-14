@@ -19,6 +19,7 @@ const nodePoints = {};      // intersection id -> { x, y } in SVG coordinates
 
 // Everything the user has changed. Reset puts it back to this "empty" state.
 const state = {
+  destinationId: null,
   closed: new Set(),        // road ids
   lanes: {},                // road id -> extra lanes (1..MAX_EXTRA_LANES)
   signals: new Map(),       // intersection id -> mainGreenShare (0..1)
@@ -29,6 +30,7 @@ const state = {
 // The full scenario we send to the backend (shared API contract).
 function currentScenario() {
   return {
+    destinationId: state.destinationId ?? undefined,
     closedRoadIds: [...state.closed],
     extraLanesByRoadId: { ...state.lanes },
     signals: [...state.signals].map(([intersectionId, mainGreenShare]) => ({ intersectionId, mainGreenShare })),
@@ -38,6 +40,7 @@ function currentScenario() {
 
 function snapshot() {
   return {
+    destinationId: state.destinationId,
     closed: new Set(state.closed),
     lanes: { ...state.lanes },
     signals: new Map(state.signals),
@@ -447,6 +450,21 @@ function renderPreset() {
   // Demo shortcut from demo/demo-script.md. Only shown if the network has that road.
   const area = $("preset-area");
   area.innerHTML = "";
+  const destinations = network.destinationIds || [];
+  if (destinations.length) {
+    const label = el("label", { for: "destination" }, "Destination ");
+    const picker = el("select", { id: "destination" });
+    for (const id of destinations) {
+      const name = id === "int_alex_univ" ? "Princeton Station" : nodeName(id);
+      picker.append(el("option", { value: id }, name));
+    }
+    state.destinationId = destinations[0];
+    picker.addEventListener("change", () => change(() => {
+      state.destinationId = picker.value;
+    }));
+    label.append(picker);
+    area.append(label);
+  }
   const presetRoad = "wash_mid";
   if (!roadById(presetRoad)) return;
   const btn = el("button", { type: "button" }, "Demo: HackPrinceton Let-Out");
@@ -455,6 +473,7 @@ function renderPreset() {
     selected = { type: "road", id: presetRoad };
     change(() => {
       restore(emptyState());
+      state.destinationId = destinations[0] ?? null;
       state.closed.add(presetRoad);
     });
   });
@@ -465,6 +484,8 @@ function renderPreset() {
 const isDragging = box => box.contains(document.activeElement) && document.activeElement.type === "range";
 
 function render() {
+  const picker = $("destination");
+  if (picker) picker.value = state.destinationId;
   renderMap();
   StreetMap.render({ state, selected, roadResult, colorKey: roadColorKey });
   renderSelected();
