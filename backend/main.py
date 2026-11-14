@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from .princeton_network import PRINCETON_NETWORK
 
-app = FastAPI(title="Princeton Traffic Lab")
+app = FastAPI(title="Traffix Lab")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5501", "http://localhost:5501"],
