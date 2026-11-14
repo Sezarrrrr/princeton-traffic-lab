@@ -1,30 +1,16 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from .princeton_network import PRINCETON_NETWORK
+
 app = FastAPI(title="Princeton Traffic Lab")
 
+ROUTE_A = ("wash_north", "wash_mid", "wash_south", "faculty_rd", "alex_station")
+ROUTE_B = ("nassau_west", "nassau_mercer", "alex_north")
+BASELINE_TRIPS = {ROUTE_A: 120, ROUTE_B: 80}
+TOTAL_TRIPS = sum(BASELINE_TRIPS.values())
 
-@app.get("/api/health")
-def health_check():
-    return {"status": "ok"}
-@app.get("/api/network")
-def get_network():
-    return {
-        "intersections": [
-            {"id": "start", "name": "Start", "x": 40, "y": 100},
-            {"id": "north", "name": "North", "x": 160, "y": 40},
-            {"id": "south", "name": "South", "x": 160, "y": 160},
-            {"id": "end", "name": "Destination", "x": 280, "y": 100},
-        ],
-        "roads": [
-            {"id": "road-1", "name": "North A", "from": "start", "to": "north"},
-            {"id": "road-2", "name": "North B", "from": "north", "to": "end"},
-            {"id": "road-3", "name": "South A", "from": "start", "to": "south"},
-            {"id": "road-4", "name": "South B", "from": "south", "to": "end"},
-        ],
-        "signalIntersections": [],
-        "busRoute": None,
-    }
+
 class SimulationRequest(BaseModel):
     closedRoadIds: list[str] = Field(default_factory=list)
     extraLanesByRoadId: dict[str, int] = Field(default_factory=dict)
@@ -32,28 +18,38 @@ class SimulationRequest(BaseModel):
     busShiftPercent: int = 0
 
 
-def simulate_closures(closed_roads, extra_lanes):
-    north_route = ("road-1", "road-2")
-    south_route = ("road-3", "road-4")
-    north_open = closed_roads.isdisjoint(north_route)
-    south_open = closed_roads.isdisjoint(south_route)
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok"}
 
-    north_trips = 120 if north_open else 0
-    south_trips = 80 if south_open else 0
-    if north_open and not south_open:
-        north_trips = 200
-    if south_open and not north_open:
-        south_trips = 200
+
+@app.get("/api/network")
+def get_network():
+    return PRINCETON_NETWORK
+
+
+def run_simulation(closed_roads, extra_lanes):
+    open_routes = [
+        route for route in BASELINE_TRIPS if closed_roads.isdisjoint(route)
+    ]
+    trips_by_road = {road["id"]: 0 for road in PRINCETON_NETWORK["roads"]}
+    completed_trips = 0
+
+    for route in open_routes:
+        trips = TOTAL_TRIPS if len(open_routes) == 1 else BASELINE_TRIPS[route]
+        completed_trips += trips
+        for road_id in route:
+            trips_by_road[road_id] += trips
 
     roads = []
     total_travel_minutes = 0.0
-    for road in get_network()["roads"]:
+    for road in PRINCETON_NETWORK["roads"]:
         road_id = road["id"]
         closed = road_id in closed_roads
-        trips = north_trips if road_id in north_route else south_trips
+        trips = trips_by_road[road_id]
         capacity = 100 * (1 + extra_lanes.get(road_id, 0))
         ratio = None if closed else trips / capacity
-        minutes = None if closed else 2 * (1 + 0.15 * ratio**4)
+        minutes = None if ratio is None else 2 * (1 + 0.15 * ratio**4)
 
         if minutes is not None:
             total_travel_minutes += trips * minutes
@@ -66,15 +62,14 @@ def simulate_closures(closed_roads, extra_lanes):
             "closed": closed,
         })
 
-    completed_trips = north_trips + south_trips
     return {
-                "totalCarTrips": 200,
+        "totalCarTrips": TOTAL_TRIPS,
         "completedCarTrips": completed_trips,
         "avgCarTravelMinutes": (
             round(total_travel_minutes / completed_trips, 2)
             if completed_trips else None
         ),
-        "unservedCarTrips": 200 - completed_trips,
+        "unservedCarTrips": TOTAL_TRIPS - completed_trips,
         "carTripsShiftedToBus": 0,
         "roads": roads,
     }
@@ -83,25 +78,17 @@ def simulate_closures(closed_roads, extra_lanes):
 @app.post("/api/simulate")
 def simulate(request: SimulationRequest):
     closed_roads = set(request.closedRoadIds)
-    known_roads = {road["id"] for road in get_network()["roads"]}
-    if closed_roads - known_roads:
-        raise HTTPException(status_code=422, detail="Unknown road ID")
-
     extra_lanes = request.extraLanesByRoadId
-    if set(extra_lanes) - known_roads:
-        raise HTTPException(status_code=422, detail="Unknown road ID for extra lanes")
+    known_roads = {road["id"] for road in PRINCETON_NETWORK["roads"]}
 
+    if (closed_roads | set(extra_lanes)) - known_roads:
+        raise HTTPException(status_code=422, detail="Unknown road ID")
     if any(lanes < 0 for lanes in extra_lanes.values()):
         raise HTTPException(status_code=422, detail="Extra lanes must be zero or more")
-
     if request.signals or request.busShiftPercent:
-        raise HTTPException(
-            status_code=422,
-            detail="Signals and bus service are not supported yet.",
-        )
+        raise HTTPException(status_code=422, detail="Signals and bus service are not supported yet")
 
     return {
-        "baseline": simulate_closures(set(), {}),
-        "scenario": simulate_closures(closed_roads, extra_lanes),
+        "baseline": run_simulation(set(), {}),
+        "scenario": run_simulation(closed_roads, extra_lanes),
     }
-    
