@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Princeton Traffic Lab</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Princeton Traffic Lab</h1>
+    <p class="subtitle">Click a road on the map to close or reopen it, then compare the original and modified scenarios.</p>
+    <p id="status" class="status">Loading…</p>
+  </header>
+
+  <main>
+    <section class="map-card" aria-label="Road map">
+      <svg id="map" viewBox="0 0 820 620" role="img" aria-label="Schematic map of roads around Princeton University"></svg>
+      <div class="legend">
+        <span><i class="swatch free"></i>Light (&lt; 0.8)</span>
+        <span><i class="swatch busy"></i>Busy (0.8–1.0)</span>
+        <span><i class="swatch jam"></i>Over capacity (&gt; 1.0)</span>
+        <span><i class="swatch closed"></i>Closed</span>
+        <span><i class="swatch empty"></i>No car trips</span>
+      </div>
+      <p class="note">Layout is schematic, not to scale. Traffic numbers are simulation assumptions.</p>
+    </section>
+
+    <aside class="panel">
+      <section id="selected" class="card">
+        <h2>Selected road</h2>
+        <p class="muted">Click a road on the map.</p>
+      </section>
+
+      <section class="card">
+        <h2>Original vs. modified</h2>
+        <table class="compare">
+          <thead><tr><th></th><th>Original</th><th>Modified</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Avg. car trip</th><td id="avg-before">–</td><td id="avg-after">–</td></tr>
+            <tr><th scope="row">Unserved car trips</th><td id="unserved-before">–</td><td id="unserved-after">–</td></tr>
+            <tr><th scope="row">Shifted to bus</th><td id="bus-before">–</td><td id="bus-after">–</td></tr>
+          </tbody>
+        </table>
+        <p id="closed-list" class="muted">No roads closed.</p>
+        <button id="reset" type="button">Reset</button>
+      </section>
+
+      <section class="card">
+        <h2>Where the trips went</h2>
+        <p class="muted small">Car trips per road, original → modified. Only roads that changed are listed.</p>
+        <ul id="shifts" class="shifts"></ul>
+      </section>
+    </aside>
+  </main>
+
+  <script src="mock/network.js"></script>
+  <script src="mock/simulate.js"></script>
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
