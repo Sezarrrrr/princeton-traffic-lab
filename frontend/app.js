@@ -10,6 +10,8 @@ const DEFAULT_GREEN_SHARE = 0.5;
 const DEFAULT_BUS_PERCENT = 20;
 const busRoutes = () => customRoutes;
 let focusedBusId = null;
+let is3D = false;
+let mapViewRequest = 0;
 
 // ---- App state ----
 let network = null;         // from GET /api/network
@@ -1419,7 +1421,9 @@ function showView(view) {
   const street = view === "street" && StreetMap.isReady();
   $("street-view").hidden = !street;
   $("schematic-view").hidden = street;
-  $("view-street").setAttribute("aria-pressed", String(street));
+  $("view-street").setAttribute("aria-pressed", String(street && !is3D));
+  $("view-3d").setAttribute("aria-pressed", String(street && is3D));
+  $("building-legend").hidden = !(street && is3D);
   $("view-street").disabled = !StreetMap.isReady();
   if (street) StreetMap.refreshSize();
 }
@@ -1428,6 +1432,29 @@ function showMapNote(text) {
   const note = $("map-note");
   note.textContent = text;
   note.hidden = !text;
+}
+
+async function setMapPerspective(enabled) {
+  const request = ++mapViewRequest;
+  const button = $("view-3d");
+  button.disabled = enabled;
+  showMapNote("");
+  try {
+    if (enabled) await StreetMap.prepare3D();
+    if (request !== mapViewRequest) return;
+    StreetMap.set3D(enabled);
+    is3D = enabled;
+  } catch {
+    if (request !== mapViewRequest) return;
+    StreetMap.set3D(false);
+    is3D = false;
+    showMapNote("3D could not load. Showing the 2D map.");
+  } finally {
+    if (request === mapViewRequest) {
+      button.disabled = false;
+      showView("street");
+    }
+  }
 }
 
 function setupViews() {
@@ -1439,7 +1466,12 @@ function setupViews() {
     pickingRoad
   };
   const onTilesFailed = reason => {
-    showMapNote(`${reason} Showing the schematic view. Try "Street map" again when you're back online.`);
+    if (is3D) {
+      setMapPerspective(false);
+      showMapNote(`${reason} Showing the 2D road network.`);
+      return;
+    }
+    showMapNote(`${reason} Showing the schematic view. Try 2D again when you're back online.`);
     showView("schematic");
   };
   let ok = false;
@@ -1448,7 +1480,8 @@ function setupViews() {
   } catch (err) {
     console.error(err);
   }
-  $("view-street").addEventListener("click", () => { showMapNote(""); showView("street"); });
+  $("view-street").addEventListener("click", () => setMapPerspective(false));
+  $("view-3d").addEventListener("click", () => { if (!is3D) setMapPerspective(true); });
 
   if (!ok) {
     showMapNote("The street map couldn't load (no internet or Leaflet blocked). Showing the schematic view.");
@@ -1457,6 +1490,7 @@ function setupViews() {
   }
   const missing = StreetMap.missing();
   if (missing.length) showMapNote(`No street geometry yet for: ${missing.join(", ")}. Those roads appear only in the schematic view.`);
+  $("view-3d").disabled = false;
   showView("street");
 }
 

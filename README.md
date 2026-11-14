@@ -27,6 +27,10 @@ Open [the local demo](http://127.0.0.1:5501/). The status should show **13,944 i
 
 The street map opens with an empty scenario. Search for an intersection or landmark in **From** and **To**, or use **Pick on map** to choose marked junctions. Once both endpoints are selected, the simulation starts and pins A and B mark the trip. Outside endpoint selection, click an intersection to edit its signal. **Reset** clears changes for the current pair. Saved shuttle definitions are available in **Map Tools**, and their enabled state starts off on each load.
 
+On `experiment-3d`, use **2D / 3D** above the map to tilt the existing street view. Both views share the same map, trip, and edits. The 3D view loads its local building snapshot when requested and returns to 2D if building data or rendering is unavailable. Raised footprints cover campus, downtown, and nearby neighborhoods. The wider road network remains available in both views.
+
+Building footprints and mapped height tags come from [OpenStreetMap](https://www.openstreetmap.org/copyright). The legend labels estimates based on 3.2 meters per mapped level or a 6.4-meter default. To regenerate the local snapshot from saved OSM XML tiles, run `python tools/export_buildings.py --input tile1.osm tile2.osm`.
+
 ## Expand the network
 
 Edit [backend/network.json](backend/network.json), rerun the import to merge your edits into the offline snapshot, restart FastAPI, and reload the page.

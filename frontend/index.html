@@ -7,7 +7,7 @@
   <!-- Leaflet 1.9.4 (BSD-2-Clause) for the street map. If it can't load, the schematic view is used. -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-  <link rel="stylesheet" href="styles.css?v=15">
+  <link rel="stylesheet" href="styles.css?v=16">
 </head>
 <body>
   <header>
@@ -22,7 +22,8 @@
     <section class="map-card" aria-label="Road map">
       <div class="map-toolbar">
         <div class="view-switch" role="group" aria-label="Map view">
-          <button type="button" id="view-street" class="seg" aria-pressed="true">Street map</button>
+          <button type="button" id="view-street" class="seg" aria-pressed="true">2D</button>
+          <button type="button" id="view-3d" class="seg" aria-pressed="false" disabled>3D</button>
         </div>
         <label class="check"><input type="checkbox" id="animate-cars" checked> Animated cars</label>
         <button id="coverage-view" type="button" hidden>Show import area</button>
@@ -34,6 +35,10 @@
 
       <div id="street-view" class="map-frame">
         <div id="leaflet-map" aria-label="Street map of Princeton with simulation roads"></div>
+        <div id="building-legend" class="building-legend" hidden>
+          <span><i></i>Estimated heights · 3.2 m per level, or 6.4 m default</span>
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">Building data © OpenStreetMap</a>
+        </div>
       </div>
       <div id="schematic-view" class="map-frame schematic" hidden>
         <svg id="map" viewBox="0 0 820 620" role="img" aria-label="Schematic map of roads around Princeton University"></svg>
@@ -132,9 +137,10 @@
   <script src="mock/network.js"></script>
   <script src="mock/simulate.js?v=2"></script>
   <script src="api.js?v=2"></script>
-  <script src="street-map.js?v=16"></script>
+  <script src="building-layer.js"></script>
+  <script src="street-map.js?v=17"></script>
   <script src="custom-bus.js?v=7"></script>
   <script src="lane-map.js?v=8"></script>
-  <script src="app.js?v=19"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>

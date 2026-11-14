@@ -14,6 +14,7 @@ const StreetMap = (() => {
   const playbackRate = 3;
 
   let map = null;
+  let tiltedPlane, buildings;
   let initialBounds = null;
   let ready = false;
   const endpointPositions = new Map();
@@ -144,6 +145,24 @@ const StreetMap = (() => {
 
 
     map = L.map("leaflet-map", { zoomSnap: 0.25, zoomDelta: 0.5, scrollWheelZoom: true, preferCanvas: false });
+    const container = map.getContainer();
+    tiltedPlane = L.DomUtil.create("div", "street-map-plane", container);
+    tiltedPlane.append(map.getPane("mapPane"));
+    const flatPoint = map.mouseEventToContainerPoint.bind(map);
+    map.mouseEventToContainerPoint = event => {
+      const point = flatPoint(event);
+      const transform = getComputedStyle(tiltedPlane).transform;
+      if (transform === "none") return point;
+      const m = new DOMMatrixReadOnly(transform);
+      const center = map.getSize().divideBy(2);
+      const { x, y } = point.subtract(center);
+      // Invert the perspective projection on the map plane (z = 0).
+      const a = m.m11 - x * m.m14, b = m.m21 - x * m.m24;
+      const c = m.m12 - y * m.m14, d = m.m22 - y * m.m24;
+      const s = x * m.m44 - m.m41, t = y * m.m44 - m.m42;
+      const determinant = a * d - b * c;
+      return L.point((s * d - b * t) / determinant, (a * t - s * c) / determinant).add(center);
+    };
     for (const road of importedRoads) importedBounds.set(road.id, L.latLngBounds(road.geometry));
     let loaded = 0, failed = 0, reported = false;
     const tiles = L.tileLayer(TILE_URL, { maxZoom: 19, attribution: ATTRIBUTION });
@@ -657,6 +676,17 @@ const StreetMap = (() => {
 
   return {
     init, render, rebuildCars, previewBus, previewLane, roadDistance, vehicleLegSeconds, playbackRate, signalStops, redLightSeconds,
+    async prepare3D() {
+      if (!ready || typeof DOMMatrixReadOnly !== "function" || !CSS.supports("transform", "perspective(1000px) rotateX(30deg)")) {
+        throw new Error("3D perspective is unavailable.");
+      }
+      buildings ??= await BuildingView.create(map);
+    },
+    set3D(enabled) {
+      tiltedPlane?.classList.toggle("is-tilted", enabled);
+      if (enabled) buildings.attach();
+      else buildings?.detach();
+    },
     focusRoadEdit(points, roadIds) {
       if (!ready) return;
       previewLane(points, roadIds, true);

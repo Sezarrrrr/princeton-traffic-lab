@@ -90,6 +90,16 @@ main {
 .map-frame { flex: 1; min-height: 360px; border-radius: 6px; overflow: hidden; position: relative; }
 .map-frame[hidden] { display: none; }
 #leaflet-map { position: absolute; inset: 0; background: #e8eaee; }
+.street-map-plane { position: absolute; inset: 0; }
+.street-map-plane.is-tilted { transform: perspective(1250px) rotateX(32deg) scale(1.23); }
+.princeton-buildings { position: absolute; top: 0; left: 0; }
+.building-legend {
+  position: absolute; bottom: 24px; left: 8px; z-index: 800;
+  padding: 4px 7px; border-radius: 4px; background: #fff; color: #283340;
+  font-size: .72rem; box-shadow: 0 1px 4px #0003;
+}
+.building-legend span, .building-legend a { display: block; }
+.building-legend i { display: inline-block; width: 8px; height: 8px; background: #e5ded2; border: 1px solid #8e8677; }
 .schematic { background: var(--map-bg); display: flex; }
 #map { width: 100%; height: 100%; display: block; background: var(--map-bg); }
 
