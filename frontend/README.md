@@ -67,7 +67,21 @@ Then open http://localhost:5500. You can also double-click `frontend/index.html`
 
 ## Tested against the real backend (2026-11-14)
 
-Backend: `backend` branch at `ae6a142` ("Connect Princeton network to simulation"), run locally with Uvicorn. CORS was added in a local test wrapper only, because the backend doesn't enable it yet.
+### Run 2: backend with CORS
+
+Backend: `backend` branch at `a1350d0` ("Allow local frontend to call API"), run unchanged with `uvicorn backend.main:app --port 8000`. Frontend: `http://127.0.0.1:5501/?api=real`. All steps were clicked in the UI.
+
+| Test | Request sent | Expected | Actual | Result |
+|---|---|---|---|---|
+| Close `wash_mid` | `closedRoadIds: ["wash_mid"]` | 20.4 min, 200 completed | 20.4 min, 200 completed, 0 unserved | ✓ Pass |
+| Close `wash_mid` + 1 lane on `alex_north` | `closedRoadIds: ["wash_mid"]`, `extraLanesByRoadId: {"alex_north": 1}` | 15.9 min, 200 completed, 0 unserved | 15.9 min, 200 completed, 0 unserved; `alex_north` 200 trips, 2.3 min, volume/capacity 1.00; line drawn wider | ✓ Pass |
+| Reset | `[]`, `{}`, `[]`, `0` | Closure and lane cleared, 10.4 min | No changes listed, no closed roads, `alex_north` back to normal width, 10.4 min (backend value 10.41), 200 completed | ✓ Pass |
+
+The trip check showed "200 completed + 0 unserved + 0 by bus = 200" in every case.
+
+### Run 1: before CORS
+
+Backend: `backend` branch at `ae6a142` ("Connect Princeton network to simulation"), run locally with Uvicorn. CORS was added in a local test wrapper only, because the backend didn't enable it yet.
 
 | Test plan case | Result |
 |---|---|
