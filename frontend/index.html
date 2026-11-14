@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Princeton Traffic Lab</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Princeton Traffic Lab</h1>
+    <p class="subtitle">Click a road to close it or add lanes. Click an orange-ringed intersection to add a signal. Combine changes and compare with the original scenario.</p>
+    <p id="status" class="status" role="status">Loading…</p>
+  </header>
+
+  <main>
+    <section class="map-card" aria-label="Road map">
+      <div class="map-toolbar">
+        <label class="check"><input type="checkbox" id="animate-cars" checked> Animated cars</label>
+        <span id="preset-area"></span>
+      </div>
+      <svg id="map" viewBox="0 0 820 620" role="img" aria-label="Schematic map of roads around Princeton University"></svg>
+      <div class="legend">
+        <span><i class="swatch free"></i>Light (&lt; 0.8)</span>
+        <span><i class="swatch busy"></i>Busy (0.8–1.0)</span>
+        <span><i class="swatch jam"></i>Over capacity (&gt; 1.0)</span>
+        <span><i class="swatch closed"></i>Closed</span>
+        <span><i class="swatch empty"></i>No car trips</span>
+        <span><i class="swatch bus"></i>Bus route</span>
+        <span><i class="dot signal-dot"></i>Signal possible</span>
+      </div>
+      <p class="note">Layout is schematic, not to scale. Badges show car trips (change vs. original). Cars are a visual aid; the numbers come from the simulation. All traffic numbers are simulation assumptions.</p>
+    </section>
+
+    <aside class="panel">
+      <section id="selected" class="card">
+        <h2>Selected</h2>
+        <p class="muted">Click a road or intersection on the map.</p>
+      </section>
+
+      <section class="card">
+        <h2>Bus route</h2>
+        <div id="bus-controls"></div>
+      </section>
+
+      <section class="card">
+        <h2>Your changes</h2>
+        <ul id="changes" class="changes"></ul>
+        <button id="reset" type="button">Reset</button>
+      </section>
+
+      <section class="card">
+        <h2>Original vs. modified</h2>
+        <table class="compare">
+          <thead><tr><th></th><th>Original</th><th>Modified</th></tr></thead>
+          <tbody id="compare-body"></tbody>
+        </table>
+        <p id="conservation" class="small muted"></p>
+      </section>
+
+      <section class="card">
+        <h2>Where the trips went</h2>
+        <p class="muted small">Car trips per road, original → modified. Only roads that changed are listed.</p>
+        <ul id="shifts" class="shifts"></ul>
+      </section>
+    </aside>
+  </main>
+
+  <script src="mock/network.js"></script>
+  <script src="mock/simulate.js"></script>
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
