@@ -4,6 +4,8 @@
 **Network Reference:** `testing/road-network.md` (Draft v2: **10 roads**, **9 unique intersections**)  
 **Endpoints Tested:** `GET /api/network`, `POST /api/simulate`  
 
+> **Scope note (Nov 14, 2026):** this plan covers the Python backend's 10-road core network (`?api=real`). The default page now runs the in-browser simulator on 308 intersections and 441 roads, where `wash_mid` is split into `wash_mid_1` and `wash_mid_2` and the numbers differ. Automated checks now exist for both: `frontend/tests.html` (12 checks, in-browser simulator) and `python -m unittest backend.test_main` (6 checks, backend). The signal and bus test cases below don't apply to the backend on `main`, which rejects those requests with a 422.
+
 ---
 
 ## Backend Coordination Flags (For Sizar)

@@ -19,13 +19,15 @@ Everything else in `frontend/` was written by our team during HackPrinceton Fall
 Serve the folder from the repo root:
 
 ```bash
-py -m http.server 5500 --directory frontend
+py -m http.server 5501 --bind 127.0.0.1 --directory frontend
 ```
 
-Then open http://localhost:5500. You can also double-click `frontend/index.html`.
+Then open http://127.0.0.1:5501/. You can also double-click `frontend/index.html`. Use port 5501: it's the only port the backend accepts requests from.
+
+Open http://127.0.0.1:5501/tests.html to run the 12 automated simulator checks (`tests.js`).
 
 - **In-browser simulator (default):** `sim/engine.js` runs the expanded network (`geo/princeton-network.js`, 308 intersections and 441 roads) with custom trips, intersection controls and road settings. It replaced the old `mock/` files and uses the same request and response format, plus extra fields.
-- **Backend mode:** open `http://localhost:5500/?api=real` to call the FastAPI server at `http://localhost:8000` (set in `api.js`). The backend must allow CORS for the page to reach it. The backend covers the 10-road core network with closures and extra lanes, so the Trips tab is hidden and the Settings tab says the assumptions are the backend's.
+- **Backend mode:** open `http://127.0.0.1:5501/?api=real` to call the FastAPI server at `http://localhost:8000` (set in `api.js`). The backend must allow CORS for the page to reach it. The backend covers the 10-road core network with closures and extra lanes, so the Trips tab is hidden and the Settings tab says the assumptions are the backend's.
 
 - **Views:** **Map** (2D street map, default), **3D**, and **Schematic**. Add `?view=schematic` or `?view=3d` to start in another view, or `?tiles=test-fail` to rehearse what happens when map tiles can't load.
 
