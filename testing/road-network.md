@@ -4,6 +4,8 @@
 **Primary Map Sources:** [Princeton University Campus Map (`map.princeton.edu`)](https://map.princeton.edu/) & [Princeton Facilities Campus Maps (`facilities.princeton.edu/maps`)](https://facilities.princeton.edu/maps)  
 **Modeling Note:** Road connectivity, landmarks, and public-street directions reflect real Princeton roads. All baseline traffic volumes, road capacities, and free-flow travel times in the simulator are **labeled modeling assumptions** for HackPrinceton 2026.
 
+> **Scope note (Nov 14, 2026):** this document describes the original 10-road core network used by the Python backend. The default page now uses a larger network built from OpenStreetMap (308 intersections, 441 roads, in `frontend/geo/princeton-network.js`), which keeps these core roads and splits some of them into numbered pieces such as `wash_mid_1`.
+
 ---
 
 ## Verified Route Pair (Primary vs. Detour)

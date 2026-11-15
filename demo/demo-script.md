@@ -1,52 +1,69 @@
-# Princeton Traffic Lab — Judge Demo Script (`demo/demo-script.md`)
+# Traffix Lab — Judge Demo Script (`demo/demo-script.md`)
 
-**Target Runtime:** 1 minute 45 seconds – 2 minutes 00 seconds (Strict 2:00 HackPrinceton judging cap)  
-**Presenter:** Map Research, Testing & Demo Lead (with Sizar & Frontend Teammate standing by)  
-**Pre-Demo Setup Checklist:**
-- Browser open to Princeton Traffic Lab at default **Baseline** view (no closures, 0 extra lanes, 0 signals, 0% bus shift).
-- Map centered on Nassau Street, Washington Road, Julis Romo Rabinowitz Building (JRR), and Princeton Station.
+**Target runtime:** 1:45 to 2:00 (strict 2:00 HackPrinceton judging cap)
+**Presenter:** Map Research, Testing & Demo Lead (Sizar and Ben standing by)
+**Version:** `main`, in-browser simulator (308 intersections, 441 roads). Every number below was checked on this version on Nov 14, 2026. Re-check them if the simulator changes.
 
----
-
-## 0:00 – 0:25 | Hook & Map Orientation ("We're right here")
-> **[Point to the Julis Romo Rabinowitz Building / Washington Road on the screen]**
->
-> "Hi! We're **Princeton Traffic Lab**, and **we're right here**—outside the Julis Romo Rabinowitz Building on Washington Road, between Nassau Street and Princeton Station.
->
-> All the roads and intersections on this map are real Princeton corridors, while our baseline volumes, capacities, and travel times are clearly labeled simulation assumptions. Right now, you're seeing normal baseline traffic flow across 9 connected road segments."
+**Pre-demo checklist:**
+- Page open at `http://127.0.0.1:5501/` (or the hosted site), **Map** view, no changes.
+- Status line reads "In-browser simulator · 308 intersections · 441 roads".
+- Headline tile "Avg. trip" shows **7.8 min**.
+- Open `tests.html` once beforehand and confirm "All 12 checks passed".
+- No Wi-Fi? Click **Schematic**. Every control works the same there.
 
 ---
 
-## 0:25 – 0:55 | Run "HackPrinceton Let-Out" (Baseline vs. Closure)
-> **[Trigger the "HackPrinceton Let-Out" scenario / close `wash_mid` outside JRR]**
+## 0:00 – 0:25 | Hook and orientation ("We're right here")
+> **[Point to the "You are here" marker on Washington Road]**
 >
-> "Now imagine **HackPrinceton Let-Out**—hundreds of people leaving this building at once while Washington Road right outside (`wash_mid`) is closed for event safety.
+> "Hi! We're **Traffix Lab**, and **we're right here**, on Washington Road between Nassau Street and Princeton Station.
 >
-> Look at the map: car trips on that closed Washington Road segment drop to **zero**, and traffic immediately reroutes west along **Nassau Street** and down **University Place** toward Princeton Station. In the summary panel, you can see our before-and-after comparison—average car travel time rises because that detour corridor absorbs the extra volume, while total trips stay conserved."
+> Every road and intersection on this map is real, from OpenStreetMap: about 440 road segments across Princeton. The traffic is simulated. Our volumes, capacities and signal timings are labeled assumptions. Right now 200 cars are leaving this building for the station, on top of normal background traffic."
 
 ---
 
-## 0:55 – 1:35 | Interactive Judge Choice (Live Mitigation)
-> **[Gesture to the control panel]**
+## 0:25 – 0:55 | Run "Demo: Let-Out" (original vs. closure)
+> **[Click "Demo: Let-Out"]**
 >
-> "Now you're the traffic planner—pick one change to relieve this bottleneck:
-> 1. **Add a lane** on University Place (`univ_place`) to widen the detour,
-> 2. **Add a traffic signal** at Washington & Prospect or Nassau & University and tune its green-light share, or
-> 3. **Enable the TigerTransit bus shift** to move a percentage of drivers onto the campus shuttle to Princeton Station."
+> "Now imagine Washington Road right outside is closed for event safety while everyone leaves.
 >
-> **[Apply the judge's chosen change and point to the updated map + metrics]**
+> The closed stretch drops to **zero** cars. Traffic reroutes west along **Nassau Street** and down **Alexander Street**, and some of it finds Faculty Road and Elm Drive. The average trip goes from **7.8 to 8.5 minutes**, and Alexander Street is now carrying about twice its capacity. Every trip is still counted: you can see the check mark here."
 >
-> "Look at what changed: [point to the highlighted road segment where congestion eased]—traffic volume shifted off the bottleneck, `carTripsShiftedToBus` / `avgCarTravelMinutes` updated immediately against the baseline, and every single trip is still accounted for between completed, shifted, and unserved trips."
+> **[Point to the red roads, then the "Avg. trip" tile and the "all trips counted" badge]**
 
 ---
 
-## 1:35 – 1:55 | Reset & Close
-> **[Click Reset to return all controls to `[]`, `{}`, `[]`, `0`]**
->
-> "One click on **Reset** clears every closure, lane, signal, and bus shift back to baseline so planners can test another combination—or even see what happens when every route is cut and average travel time becomes `null`. Thanks—happy to answer any questions!"
+## 0:55 – 1:35 | Judge's choice (live fix)
+> "Now you're the traffic planner. Pick one:
+> 1. **Add a lane** on the worst bottleneck,
+> 2. **Change an intersection**: swap a stop sign for a signal, or retime a light, or
+> 3. **See it in 3D.**"
+
+**If they pick 1:** click **Alexander St (College Rd to University Pl)**, press **+** on extra lanes.
+> "One extra lane on that block brings the average back down to **8.3 minutes**. It helps, but it doesn't undo the closure, because the next block becomes the bottleneck."
+
+**If they pick 2:** click an intersection on Alexander Street or Nassau Street, change its control or drag the green split.
+> "Each control type has its own delay formula. Watch the junction wait and the approach table update as I change it."
+> *(Don't promise a direction. Read the number that appears.)*
+
+**If they pick 3:** click **3D**.
+> "Same simulation, on a 3D map with real building shapes. Roads are colored by congestion and the cars move at the simulated speed."
+
+**Don't offer the bus during the closure.** The bus route runs on Washington Road, so it is suspended while that road is closed, and the page says so.
 
 ---
 
-## Judge Q&A Quick Notes (Keep Handy)
-- **What did each teammate build?** Sizar built the Python/FastAPI simulation engine (`/api/network`, `/api/simulate`); our frontend teammate built the interactive HTML/CSS/JS map and before/after dashboard; I researched the Princeton campus corridors, wrote the test suite (`testing/test-plan.md`), and designed the demo.
-- **How do we verify the math?** Every scenario is tested to ensure `completed car trips + unservedCarTrips + carTripsShiftedToBus == original car trips`, closed roads always carry `0` trips, and completely disconnected routes return `null` instead of a misleading `0` travel time.
+## 1:35 – 1:55 | Reset and close
+> **[Click Reset]**
+>
+> "**Reset** clears every change so you can test another idea. You can also add your own trip between any two places, change speed limits, or close enough roads that trips can't be completed, in which case we report them as unserved instead of hiding them. Thanks! Happy to take questions."
+
+---
+
+## Judge Q&A quick notes
+- **What did each teammate build?** Sizar built the Python/FastAPI backend (`/api/network`, `/api/simulate`). Ben built the frontend: the map views, the in-browser simulator, and the controls and panels. I researched the Princeton corridors, wrote the test plan (`testing/test-plan.md`) and designed the demo.
+- **Which simulator is running?** The in-browser one (`frontend/sim/engine.js`). The Python backend is a smaller 10-road model, available with `?api=real`.
+- **How do you check the math?** `tests.html` runs 12 automated checks on the in-browser simulator, and the backend has 6 unit tests. For example: completed + unserved + bus trips always equals total trips, closed roads carry zero cars, and closing every road gives no average instead of a misleading 0.
+- **Is the traffic data real?** No. Roads and mapped signals, stop signs and roundabouts are from OpenStreetMap. Volumes, capacities and timings are assumptions, and the model isn't calibrated against real counts.
+- **What doesn't it model?** One 15-minute period only: no queues building over time, no turn restrictions, no pedestrians or bikes, and bus travel time isn't simulated.
+- **What libraries did you use?** Leaflet (2D map), MapLibre GL JS with OpenFreeMap tiles (3D), OpenStreetMap data, and FastAPI for the backend. Everything else was written this weekend.
