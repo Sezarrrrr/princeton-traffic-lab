@@ -90,6 +90,6 @@ Map sources for the original 10-road core network are recorded in [testing/road-
 
 ## Team
 
-- **Sizar:** Python/FastAPI backend.
-- **Ben:** frontend (map views, in-browser simulator, controls and panels).
-- **Road research, testing and demo lead:** corridor research, the test plan and the demo script.
+- **Sizar Ishak:** Python/FastAPI backend.
+- **Ben Chuquiruna:** frontend (map views, in-browser simulator, controls and panels).
+- **Gabriel Cupo:** Road research, testing and demo lead:** corridor research, the test plan and the demo script.
