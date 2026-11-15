@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Princeton Traffic Lab</title>
+  <title>Traffix Lab</title>
   <!-- Leaflet 1.9.4 (BSD-2-Clause) for the street map. If it can't load, the schematic view is used. -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
@@ -12,7 +12,7 @@
 <body>
   <header>
     <div class="title-row">
-      <h1>Princeton Traffic Lab</h1>
+      <h1>Traffix Lab</h1>
       <p id="status" class="status" role="status">Loading…</p>
     </div>
     <p class="subtitle">Choose a trip, then use Map Tools to edit the scenario.</p>
@@ -110,6 +110,14 @@
           <tbody id="compare-body"></tbody>
         </table>
         <p id="conservation" class="small muted"></p>
+        <section id="what-happened" hidden aria-live="polite">
+          <h3>What happened?</h3><p id="explanation-text"></p>
+          <p id="explanation-context" class="small muted"></p>
+          <div class="explanation-definitions">
+            <details><summary aria-label="What is capacity?">Capacity &#9432;</summary><p>The modeled number of car trips a road can handle before congestion adds travel time. This is a simulation assumption.</p></details>
+            <details><summary aria-label="What is effective speed?">Effective speed &#9432;</summary><p>The simulated driving speed after congestion, limited by the speed limit. Signal waits also contribute to trip time. Animation playback does not change the results.</p></details>
+          </div>
+        </section>
       </section>
 
       <section class="card">

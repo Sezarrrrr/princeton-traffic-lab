@@ -1,4 +1,4 @@
-// Princeton Traffic Lab frontend.
+// Traffix Lab frontend.
 // Draws whatever network GET /api/network returns (no street names or IDs are hard-coded,
 // except the optional demo preset), lets the user combine changes (road closures, extra lanes,
 // signals, bus shift), and shows the POST /api/simulate results.
@@ -1059,6 +1059,7 @@ function render() {
   renderBus();
   renderChanges();
   renderComparison();
+  renderExplanation();
   renderShifts();
 }
 
@@ -1223,6 +1224,8 @@ function select(type, id) {
       (pickingRoad() && type !== "road") ||
       (activeTool !== "signal" && !pickingRoad())) return;
   selected = { type, id };
+  explanationBefore = null;
+  explanationKey = null;
   render();
 }
 
@@ -1315,14 +1318,46 @@ function resetScenario() {
 }
 
 let confirmedState = null;
+let confirmedRequest = null, explanationBefore = null, explanationKey = null;
+let explanationVersion = 0, explanationPending = false;
+function renderExplanation() {
+  const box = $("what-happened");
+  box.hidden = !hasTrip() || !resultMatchesEndpoints() || CONFIG.useMock;
+  if (explanationPending) { $("explanation-text").textContent = "Updating simulation…"; return; }
+  if (box.hidden) { explanationVersion++; explanationKey = null; return; }
+  const payload = { scenario: confirmedRequest, before: explanationBefore,
+    roadId: selected?.type === "road" ? selected.id : null };
+  if (!payload.scenario) return;
+  const key = JSON.stringify(payload);
+  if (explanationKey === key) return;
+  explanationKey = key;
+  const version = ++explanationVersion;
+  $("explanation-text").textContent = "Comparing simulated results…";
+  $("explanation-context").textContent = "";
+  postScenario("explain", payload).then(data => {
+    if (version !== explanationVersion) return;
+    $("explanation-text").textContent = data.text;
+    $("explanation-context").textContent = data.comparison;
+  }).catch(() => {
+    if (version === explanationVersion) $("explanation-text").textContent = "The explanation is unavailable. Your simulation results are unchanged.";
+  });
+}
 async function runSimulation() {
   const myRequest = ++requestCounter;
+  explanationVersion++;
+  explanationKey = null;
+  const submitted = structuredClone(currentScenario());
+  explanationPending = hasTrip();
   $("trip-feedback").textContent = "";
   render(); // show the change right away
   if (!hasTrip()) return;
   try {
-    const data = await fetchSimulation(currentScenario());
+    const data = await fetchSimulation(submitted);
     if (myRequest !== requestCounter) return; // a newer request has started
+    explanationBefore = confirmedRequest && ["originId", "destinationId", "tripDemand"].every(key =>
+      confirmedRequest[key] === submitted[key]) ? confirmedRequest : null;
+    confirmedRequest = submitted;
+    explanationPending = false;
     result = data;
     roadResults = Object.fromEntries(["baseline", "scenario"].map(key => [key, new Map(data[key].roads.map(road => [road.id, road]))]));
     confirmedState = snapshot();
@@ -1335,6 +1370,7 @@ async function runSimulation() {
     rebuildCars();
   } catch (err) {
     if (myRequest !== requestCounter) return;
+    explanationPending = false;
     if (confirmedState) restore(confirmedState);
     render();
     setStatus(`That change wasn't applied: ${err.message}`, true);

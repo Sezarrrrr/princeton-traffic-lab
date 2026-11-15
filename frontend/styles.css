@@ -357,3 +357,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .speed-edit-sign small { font-size: 9px; }
 .speed-edit-sign::after { border-width: 4px; margin-top: 1px; }
 .speed-edit-details > div { margin-top: 4px; }
+
+#what-happened { border-top: 1px solid #dce3eb; margin-top: 12px; padding-top: 8px; overflow-wrap: anywhere; }
+#what-happened h3 { font-size: 1rem; margin: 4px 0; }
+.explanation-definitions { display: flex; flex-wrap: wrap; gap: 8px; font-size: .8rem; }
+.explanation-definitions details { max-width: 100%; }
+.explanation-definitions summary { cursor: pointer; color: #395a75; }
+.explanation-definitions p { max-width: 32ch; }

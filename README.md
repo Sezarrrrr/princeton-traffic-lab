@@ -1,11 +1,15 @@
-# princeton-traffic-lab
+# Traffix Lab
+
+Latest competition source: **experiment-3d**. This branch includes the optional 3D view, the offline Princeton road and building data, and the simulation explanations.
+
+Live demo: [traffixlab.us](https://traffixlab.us). The hosted deployment uses the separate `deploy-render` branch and may differ from this latest source version.
 
 ## Run on Windows
 
 Install Git for Windows and Python 3.14, then open PowerShell. Confirm that `git --version` and `python --version` work before running the setup.
 
 ```powershell
-git clone --branch expand-traffic-network https://github.com/Sezarrrrr/princeton-traffic-lab.git
+git clone --branch experiment-3d https://github.com/Sezarrrrr/princeton-traffic-lab.git
 cd princeton-traffic-lab
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -126,3 +130,7 @@ The Princeton Public Library, Spring Street Garage and Princeton Garden Theatre 
 The geometry and access tags for the expansion come from OpenStreetMap, including [William Street](https://www.openstreetmap.org/way/11641569), [Prospect Avenue](https://www.openstreetmap.org/way/581731352), [Murray Place](https://www.openstreetmap.org/way/11644044), and [Aiken Avenue](https://www.openstreetmap.org/way/11641254). The [Princeton one-way ordinance](https://ecode360.com/36793255) specifies southbound Charlton Street from Nassau to William. The Engineering Quadrangle and Friend Center use Olden & William as their graph access point. [Princeton Engineering directions](https://engineering.princeton.edu/about/visitors) · [Friend Center directions](https://ece.princeton.edu/academics/graduate/visit-day-directions).
 
 The model defaults to 100 trips. Set **Simulated trips** above the map to change demand for both the original and modified scenarios. Capacity is 100 cars per modeled lane. Free-flow time is segment length divided by the applicable speed limit. Congestion adds delay only when volume exceeds capacity. Installed signals contribute wait separately and use a 90-second cycle. The Princeton Station demo retains its 60/40 assignment while both corridors are open. Other car trips follow open, car-accessible paths weighted by directional free-flow time. Shuttle routes, stops and shift percentages are simulation assumptions. **Find the Best Fix** compares individual changes by trip coverage, then average car time.
+
+### What happened? explanations
+
+The comparison panel explains measured road and trip results in two or three sentences, using deterministic backend templates (no AI provider). After an edit it compares the previous successful scenario with the new one for the same endpoints and demand, retaining other edits. Selecting a road compares the original and current scenarios and labels that as the combined effect. Capacity and effective-speed definitions expand from the info controls. Run `.\.venv\Scripts\python.exe -m unittest testing.test_explanations -v` to check lane/speed isolation, closures, signals, buses, and unused roads.

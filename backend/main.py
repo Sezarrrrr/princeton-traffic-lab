@@ -12,7 +12,7 @@ from .simulator import (
     SimulationRequest, recommend, run_simulation,
 )
 
-app = FastAPI(title="Princeton Traffic Lab")
+app = FastAPI(title="Traffix Lab")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
@@ -168,3 +168,24 @@ def preview_lane(request: LanePreview):
         return {"options": lane_options(start, end, frozenset(request.closedRoadIds))}
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+class ExplanationRequest(BaseModel):
+    scenario: SimulationRequest
+    before: SimulationRequest | None = None
+    roadId: str | None = None
+
+
+@app.post("/api/explain")
+def explain_change(request: ExplanationRequest):
+    from .explanations import explain
+    validate(request.scenario)
+    if request.roadId is not None and request.roadId not in ROADS:
+        raise HTTPException(status_code=422, detail="Unknown road ID")
+    before = request.before or SimulationRequest(originId=request.scenario.originId,
+        destinationId=request.scenario.destinationId, tripDemand=request.scenario.tripDemand)
+    validate(before)
+    if (before.originId, before.destinationId, before.tripDemand) != (
+            request.scenario.originId, request.scenario.destinationId, request.scenario.tripDemand):
+        raise HTTPException(status_code=422, detail="Compare the same trip and demand")
+    return explain(before, request.scenario, request.roadId, request.before is not None)
